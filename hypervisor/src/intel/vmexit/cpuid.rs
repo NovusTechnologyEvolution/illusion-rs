@@ -6,7 +6,7 @@ use {
         error::HypervisorError,
         intel::{
             vm::Vm,
-            vmexit::{commands::handle_guest_commands, ExitType},
+            vmexit::{ExitType, commands::handle_guest_commands},
         },
     },
     bitfield::BitMut,

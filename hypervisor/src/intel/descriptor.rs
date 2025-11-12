@@ -11,7 +11,7 @@ use {
     x86::{
         dtables::DescriptorTablePointer,
         segmentation::{
-            cs, BuildDescriptor, CodeSegmentType, Descriptor, DescriptorBuilder, GateDescriptorBuilder, SegmentDescriptorBuilder, SegmentSelector,
+            BuildDescriptor, CodeSegmentType, Descriptor, DescriptorBuilder, GateDescriptorBuilder, SegmentDescriptorBuilder, SegmentSelector, cs,
         },
     },
 };

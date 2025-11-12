@@ -8,8 +8,8 @@ use {
             vm::Vm,
             vmerror::EptViolationExitQualification,
             vmexit::{
-                mtf::{set_monitor_trap_flag, update_guest_interrupt_flag},
                 ExitType,
+                mtf::{set_monitor_trap_flag, update_guest_interrupt_flag},
             },
         },
     },

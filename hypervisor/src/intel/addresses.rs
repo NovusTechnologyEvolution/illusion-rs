@@ -11,7 +11,7 @@ use {
     },
     log::trace,
     x86::{
-        bits64::paging::{PAddr, BASE_PAGE_SHIFT},
+        bits64::paging::{BASE_PAGE_SHIFT, PAddr},
         vmx::vmcs,
     },
 };

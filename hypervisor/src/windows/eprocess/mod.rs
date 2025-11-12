@@ -3,7 +3,7 @@ use {
         intel::{addresses::PhysicalAddress, hooks::hook_manager::SHARED_HOOK_MANAGER},
         windows::nt::{
             pe::{djb2_hash, get_export_by_hash},
-            types::{UNICODE_STRING, _LIST_ENTRY},
+            types::{_LIST_ENTRY, UNICODE_STRING},
         },
     },
     alloc::string::String,

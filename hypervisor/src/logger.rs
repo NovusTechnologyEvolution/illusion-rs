@@ -131,11 +131,5 @@ fn apic_id() -> u32 {
 
 /// Convenience getter if some other part of the hypervisor wants to log manually.
 pub fn global_logger() -> Option<&'static SerialLogger> {
-    unsafe {
-        if SERIAL_LOGGER.is_null() {
-            None
-        } else {
-            Some(&*SERIAL_LOGGER)
-        }
-    }
+    unsafe { if SERIAL_LOGGER.is_null() { None } else { Some(&*SERIAL_LOGGER) } }
 }

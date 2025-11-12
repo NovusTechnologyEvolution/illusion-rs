@@ -7,7 +7,7 @@
 
 use {
     crate::{pemem::djb2_hash, ssn::Syscall},
-    shared::{ClientCommand, ClientDataPayload, Command, HookData, ProcessMemoryOperation, PASSWORD},
+    shared::{ClientCommand, ClientDataPayload, Command, HookData, PASSWORD, ProcessMemoryOperation},
     std::arch::asm,
 };
 

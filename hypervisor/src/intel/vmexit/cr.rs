@@ -4,7 +4,7 @@ use {
         error::HypervisorError,
         intel::{
             events::EventInjection,
-            invvpid::{invvpid_single_context, VPID_TAG},
+            invvpid::{VPID_TAG, invvpid_single_context},
             support::{rdmsr, read_effective_guest_cr0, read_effective_guest_cr4, vmread, vmwrite},
             vm::Vm,
             vmerror::{ControlRegAccessExitQualification, CrAccessReg, CrAccessType},

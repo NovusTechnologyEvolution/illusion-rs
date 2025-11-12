@@ -9,10 +9,10 @@ use {
         error::HypervisorError,
         intel::{
             capture::GuestRegisters,
-            controls::{adjust_vmx_controls, VmxControl},
+            controls::{VmxControl, adjust_vmx_controls},
             descriptor::Descriptors,
             invept::invept_single_context,
-            invvpid::{invvpid_single_context, VPID_TAG},
+            invvpid::{VPID_TAG, invvpid_single_context},
             segmentation::{access_rights_from_native, lar, lsl},
             support::{cr3, rdmsr, sidt, vmread, vmwrite},
         },

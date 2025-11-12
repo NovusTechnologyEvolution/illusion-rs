@@ -14,6 +14,7 @@ use {
             vm::Vm,
             vmerror::VmxBasicExitReason,
             vmexit::{
+                ExitType,
                 cpuid::handle_cpuid,
                 cr::handle_cr_reg_access,
                 ept_misconfiguration::handle_ept_misconfiguration,
@@ -31,7 +32,6 @@ use {
                 vmcall::handle_vmcall,
                 vmxon::handle_vmxon,
                 xsetbv::handle_xsetbv,
-                ExitType,
             },
         },
         windows::eprocess::ProcessInformation,

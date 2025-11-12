@@ -3,11 +3,12 @@ extern crate alloc;
 use {
     alloc::{borrow::ToOwned, boxed::Box, vec::Vec},
     uefi::{
+        CStr16, Identify,
         prelude::*,
         proto::{
             device_path::{
-                build::{media::FilePath, DevicePathBuilder},
                 DevicePath,
+                build::{DevicePathBuilder, media::FilePath},
             },
             media::{
                 file::{File, FileAttribute, FileMode},
@@ -15,7 +16,6 @@ use {
             },
         },
         table::boot::{HandleBuffer, SearchType},
-        CStr16, Identify,
     },
 };
 

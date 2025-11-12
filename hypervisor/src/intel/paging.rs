@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Intel® 64 and IA-32 Architectures Software Developer's Manual: 4.2 HIERARCHICAL PAGING STRUCTURES: AN OVERVIEW
 //! This section covers the standard paging mechanism as used in x86-64 architecture.
 //! Standard paging controls how virtual memory addresses are translated to physical memory addresses.
@@ -10,7 +11,7 @@ use {
     bitfield::bitfield,
     core::ptr::addr_of,
     log::error,
-    x86::bits64::paging::{pd_index, pdpt_index, pml4_index, pt_index, VAddr, BASE_PAGE_SHIFT, BASE_PAGE_SIZE, HUGE_PAGE_SIZE, LARGE_PAGE_SIZE},
+    x86::bits64::paging::{BASE_PAGE_SHIFT, BASE_PAGE_SIZE, HUGE_PAGE_SIZE, LARGE_PAGE_SIZE, VAddr, pd_index, pdpt_index, pml4_index, pt_index},
 };
 
 /// Represents the entire Page Tables structure for the hypervisor.

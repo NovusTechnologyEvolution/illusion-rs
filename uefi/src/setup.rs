@@ -4,6 +4,7 @@
 
 use {
     alloc::boxed::Box,
+    core::sync::atomic::{AtomicU64, Ordering},
     hypervisor::{
         allocator::box_zeroed,
         intel::{
@@ -14,6 +15,10 @@ use {
     log::debug,
     uefi::{prelude::BootServices, proto::loaded_image::LoadedImage},
 };
+
+/// We remember the image base we discovered during setup so later code
+/// (like the processor/virtualization handoff) can jump into it.
+static IMAGE_BASE: AtomicU64 = AtomicU64::new(0);
 
 /// Sets up the hypervisor by recording the image base, creating a dummy page, initializing the shared hook manager, and nullifying relocations.
 ///
@@ -32,9 +37,19 @@ pub fn setup(boot_services: &BootServices) -> uefi::Result<()> {
     HookManager::initialize_shared_hook_manager(dummpy_page_pa);
 
     let image_base = loaded_image.info().0 as u64;
+
+    // make it available to other modules
+    IMAGE_BASE.store(image_base, Ordering::Relaxed);
+
     zap_relocations(image_base);
 
     Ok(())
+}
+
+/// Give other modules access to the image base we found during setup.
+/// Returns 0 if setup hasn't run yet.
+pub fn get_recorded_image_base() -> u64 {
+    IMAGE_BASE.load(Ordering::Relaxed)
 }
 
 /// Records the base address and size of the loaded UEFI image.

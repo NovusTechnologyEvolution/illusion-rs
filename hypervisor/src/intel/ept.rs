@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Intel® 64 and IA-32 Architectures Software Developer's Manual: 29.3 THE EXTENDED PAGE TABLE MECHANISM (EPT)
 //! The extended page-table mechanism (EPT) is a feature that can be used to support the virtualization of physical memory.
 //! When EPT is in use, certain addresses that would normally be treated as physical addresses (and used to access memory) are instead treated as guest-physical addresses
@@ -17,7 +18,7 @@ use {
     bitfield::bitfield,
     core::ptr::addr_of,
     log::*,
-    x86::bits64::paging::{pd_index, pdpt_index, pml4_index, pt_index, VAddr, BASE_PAGE_SHIFT, BASE_PAGE_SIZE, HUGE_PAGE_SIZE, LARGE_PAGE_SIZE},
+    x86::bits64::paging::{BASE_PAGE_SHIFT, BASE_PAGE_SIZE, HUGE_PAGE_SIZE, LARGE_PAGE_SIZE, VAddr, pd_index, pdpt_index, pml4_index, pt_index},
 };
 
 /// Represents the entire Extended Page Table structure.

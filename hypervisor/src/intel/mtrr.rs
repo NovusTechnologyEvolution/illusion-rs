@@ -7,7 +7,7 @@
 use {
     crate::intel::support::rdmsr,
     alloc::vec::Vec,
-    x86::msr::{IA32_MTRRCAP, IA32_MTRR_PHYSBASE0, IA32_MTRR_PHYSMASK0},
+    x86::msr::{IA32_MTRR_PHYSBASE0, IA32_MTRR_PHYSMASK0, IA32_MTRRCAP},
 };
 
 /// Represents the different types of memory as defined by MTRRs.

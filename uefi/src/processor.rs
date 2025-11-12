@@ -1,73 +1,59 @@
-//! This module provides utility functions for processor-related operations in UEFI,
-//! facilitating the initialization of virtualization across multiple processors.
+// uefi/src/processor.rs
 
 use {
-    crate::virtualize::virtualize_system,
-    core::ffi::c_void,
-    hypervisor::intel::capture::{capture_registers, GuestRegisters},
-    log::*,
-    uefi::{prelude::*, proto::pi::mp::MpServices},
+    crate::{setup::get_recorded_image_base, stack, virtualize::virtualize_system},
+    core::alloc::Layout,
+    hypervisor::intel::capture::{GuestRegisters, capture_registers},
+    uefi::{Status, table::boot::BootServices},
 };
 
-/// Starts the hypervisor on all processors.
-///
-/// # Arguments
-///
-/// * `boot_services` - A reference to the UEFI Boot Services.
-///
-/// # Returns
-///
-/// A result indicating the success or failure of starting the hypervisor.
-pub fn start_hypervisor_on_all_processors(boot_services: &BootServices) -> uefi::Result<()> {
-    let handle = boot_services.get_handle_for_protocol::<MpServices>()?;
-    let mp_services = boot_services.open_protocol_exclusive::<MpServices>(handle)?;
-    let processor_count = mp_services.get_number_of_processors()?;
+/// Size of the host stack we give to the hypervisor landing code.
+/// Adjust if your landing code expects more.
+const HOST_STACK_SIZE: usize = 0x4000;
 
-    info!("Total processors: {}", processor_count.total);
-    info!("Enabled processors: {}", processor_count.enabled);
-
-    if processor_count.enabled == 1 {
-        info!("Found only one processor, virtualizing it");
-        start_hypervisor();
-    } else {
-        info!("Found multiple processors, virtualizing all of them");
-
-        // Don't forget to virtualize this thread...
-        start_hypervisor();
-
-        // Virtualize all other threads...
-        mp_services.startup_all_aps(true, start_hypervisor_on_ap as _, core::ptr::null_mut(), None, None)?;
+/// Start the hypervisor on *this* processor.
+///
+/// Matches `main.rs`:
+/// - takes only `&BootServices`
+/// - returns `uefi::Result<()>`
+///
+/// On success this never actually returns (we jump to landing code).
+pub fn start_hypervisor_on_all_processors(_boot_services: &BootServices) -> uefi::Result<()> {
+    //
+    // 1. Allocate a host stack we can switch to
+    //
+    let layout = Layout::from_size_align(HOST_STACK_SIZE, 0x10).expect("valid stack layout");
+    let host_stack_base = unsafe { stack::allocate_host_stack(layout) };
+    if host_stack_base.is_null() {
+        return Err(Status::OUT_OF_RESOURCES.into());
     }
 
-    info!("The hypervisor has been installed successfully!");
+    // UEFI allocator gives us the base (low) address; stacks grow down,
+    // so the "top" is base + size.
+    let host_stack_top = unsafe { host_stack_base.add(HOST_STACK_SIZE) } as u64;
 
-    Ok(())
-}
-
-/// Hypervisor initialization procedure for Application Processors (APs).
-///
-/// # Arguments
-///
-/// * `procedure_argument` - A pointer to the `*mut c_void`.
-extern "efiapi" fn start_hypervisor_on_ap(_procedure_argument: *mut c_void) {
-    start_hypervisor();
-}
-
-/// Initiates the virtualization process.
-fn start_hypervisor() {
-    let mut guest_registers = GuestRegisters::default();
-    // Unsafe block to capture the current CPU's register state.
-    let is_virtualized = unsafe { capture_registers(&mut guest_registers) };
-
-    // After `vmlaunch`, Guest execution will begin here. We then check for an existing hypervisor:
-    // if absent, proceed with installation; otherwise, no further action is needed.
-    // The guest will return here and it will have it's value of rax set to 1, meaning the logical core is virtualized.
-    guest_registers.rax = 1;
-
-    // Proceed with virtualization only if the current processor is not yet virtualized.
-    debug!("Is virtualized: {}", is_virtualized);
-    if !is_virtualized {
-        debug!("Virtualizing the system");
-        virtualize_system(&guest_registers);
+    //
+    // 2. Capture current guest CPU state into the structure the hypervisor expects.
+    //
+    let mut guest_regs: GuestRegisters = unsafe { core::mem::zeroed() };
+    let ok = unsafe { capture_registers(&mut guest_regs) };
+    if !ok {
+        return Err(Status::ABORTED.into());
     }
+
+    //
+    // 3. Figure out what to jump to.
+    //    We recorded the UEFI image base during setup(), so reuse that.
+    //
+    let landing_code = get_recorded_image_base();
+    if landing_code == 0 {
+        // setup() didn't run or didn't store it
+        return Err(Status::ABORTED.into());
+    }
+
+    //
+    // 4. Hand off to the common stack-jump + landing-jump code.
+    //    This never returns.
+    //
+    virtualize_system(&guest_regs, landing_code as usize, host_stack_top);
 }

@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Provides utilities for accessing and manipulating PE (Portable Executable) format images.
 //! Supports operations like finding DOS and NT headers, exports by hash, and image size.
 

@@ -24,7 +24,7 @@ use {
     log::*,
     spin::Mutex,
     x86::{
-        bits64::paging::{PAddr, BASE_PAGE_SIZE},
+        bits64::paging::{BASE_PAGE_SIZE, PAddr},
         msr,
     },
 };

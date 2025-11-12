@@ -24,7 +24,7 @@ use {
     log::*,
     x86::{
         bits64::rflags::RFlags,
-        cpuid::{cpuid, CpuId, FeatureInfo},
+        cpuid::{CpuId, FeatureInfo, cpuid},
         vmx::vmcs,
     },
 };

@@ -1,4 +1,5 @@
 #![allow(static_mut_refs)]
+#![allow(unsafe_op_in_unsafe_fn)]
 //! This module provides a global allocator using a linked list heap allocation strategy.
 //! The allocator is initialized with a fixed-size memory pool and supports memory allocation,
 //! deallocation, and reallocation operations. The allocator tracks memory usage and provides
