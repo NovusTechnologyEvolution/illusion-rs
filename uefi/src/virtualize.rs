@@ -1,11 +1,9 @@
 //! Provides a mechanism to virtualize the system by installing a hypervisor on the current processor,
-//! utilizing custom stack allocation and low-level assembly for context switching. Essential for
-//! enabling hardware-assisted virtualization with specific guest register configurations.
-//! Credits to Satoshi Tanda: https://github.com/tandasat/Hello-VT-rp/blob/main/hypervisor/src/switch_stack.rs
+//! utilizing custom stack allocation and low-level assembly for context switching.
 
 use {
     crate::stack::allocate_host_stack,
-    core::{alloc::Layout, arch::global_asm, intrinsics::copy_nonoverlapping},
+    core::{alloc::Layout, arch::global_asm, ptr},
     hypervisor::{
         global_const::STACK_PAGES_PER_PROCESSOR,
         intel::{capture::GuestRegisters, page::Page},
@@ -27,7 +25,9 @@ pub fn virtualize_system(guest_registers: &GuestRegisters) -> ! {
     let size = layout.size();
 
     debug!("Zeroing stack space for host");
-    unsafe { copy_nonoverlapping(0 as _, stack, size) }
+    unsafe {
+        ptr::write_bytes(stack, 0, size);
+    }
 
     if stack == core::ptr::null_mut() {
         panic!("Failed to allocate stack");

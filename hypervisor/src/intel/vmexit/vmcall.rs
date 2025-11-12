@@ -1,5 +1,4 @@
-//! This crate includes functionalities to handle virtual machine (VM) exit events in a hypervisor environment, particularly focusing on VMCALL instructions
-//! which are used for hypercalls or VM-to-hypervisor communication.
+//! Handle VM exits caused by VMCALL (hypercall) from the guest.
 
 use {
     crate::{
@@ -28,12 +27,8 @@ use {
 ///
 /// # Returns
 ///
-/// * `Ok(ExitType)`: The continuation exit type after handling the VMCALL, usually indicates that VM execution should continue.
-/// * `Err(HypervisorError)`: An error if the VMCALL command is unknown or if there's a failure in handling the command.
-///
-/// # Errors
-///
-/// * `HypervisorError::UnknownVmcallCommand`: Returned if the VMCALL command is not recognized.
+/// * `Ok(ExitType)`: continue execution
+/// * `Err(HypervisorError)`: something about the page / hook wasn't found
 pub fn handle_vmcall(vm: &mut Vm) -> Result<ExitType, HypervisorError> {
     trace!("Handling VMCALL VM exit...");
     trace!("Register state before handling VM exit: {:?}", vm.guest_registers);
@@ -53,10 +48,8 @@ pub fn handle_vmcall(vm: &mut Vm) -> Result<ExitType, HypervisorError> {
 
     let mut hook_manager = SHARED_HOOK_MANAGER.lock();
 
-    // Set the current hook to the EPT hook for handling MTF exit
     let exit_type = if let Some(shadow_page_pa) = hook_manager.memory_manager.get_shadow_page_as_ptr(guest_page_pa.as_u64()) {
         trace!("Shadow Page PA: {:#x}", shadow_page_pa);
-
         trace!("Executing VMCALL hook on shadow page for EPT hook at PA: {:#x} with VA: {:#x}", guest_function_pa, vm.guest_registers.rip);
 
         let pre_alloc_pt = hook_manager
@@ -64,7 +57,7 @@ pub fn handle_vmcall(vm: &mut Vm) -> Result<ExitType, HypervisorError> {
             .get_page_table_as_mut(guest_large_page_pa.as_u64())
             .ok_or(HypervisorError::PageTableNotFound)?;
 
-        // Perform swap_page before the mutable borrow for update_guest_interrupt_flag
+        // swap the page so the guest executes our shadow
         vm.primary_ept
             .swap_page(guest_page_pa.as_u64(), guest_page_pa.as_u64(), AccessType::READ_WRITE_EXECUTE, pre_alloc_pt)?;
 
@@ -75,22 +68,22 @@ pub fn handle_vmcall(vm: &mut Vm) -> Result<ExitType, HypervisorError> {
 
         debug!("Hook info: {:#x?}", hook_info);
 
-        // Calculate the number of instructions in the function to set the MTF counter for restoring overwritten instructions by single-stepping.
+        // figure out how many bytes we overwrote so we can single-step them back in MTF
         let instruction_count =
-            unsafe { HookManager::calculate_instruction_count(guest_function_pa.as_u64(), HookManager::hook_size(hook_info.ept_hook_type)) as u64 };
+            HookManager::calculate_instruction_count(guest_function_pa.as_u64(), HookManager::hook_size(hook_info.ept_hook_type)) as u64;
+
         vm.mtf_counter = Some(instruction_count);
 
-        // Set the monitor trap flag and initialize counter to the number of overwritten instructions
+        // turn on MTF so the next instructions are single-stepped
         set_monitor_trap_flag(true);
 
-        // Ensure all data mutations to vm are done before calling this.
-        // This function will update the guest interrupt flag to prevent interrupts while single-stepping
+        // and make sure interrupts don't ruin it
         update_guest_interrupt_flag(vm, false)?;
 
         Ok(ExitType::Continue)
     } else {
+        // guest did VMCALL somewhere we didn't hook -> inject #UD like Intel docs say
         // https://www.felixcloutier.com/x86/vmcall
-        // #UD: If executed outside VMX operation.
         EventInjection::vmentry_inject_ud();
         Ok(ExitType::Continue)
     };
