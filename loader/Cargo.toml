@@ -8,5 +8,5 @@ name = "loader"
 path = "src/main.rs"
 
 [dependencies]
-log = "0.4.20"
-uefi = { version = "0.30.0", features = [ "panic_handler", "logger", "alloc", "global_allocator" ] } # https://crates.io/crates/uefi
+log = "0.4.28"
+uefi = { version = "0.36", features = ["panic_handler", "logger", "alloc", "global_allocator"] }

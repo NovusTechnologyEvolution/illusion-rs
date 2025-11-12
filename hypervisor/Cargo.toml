@@ -3,8 +3,6 @@ name = "hypervisor"
 version = "0.1.0"
 edition = "2024"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [features]
 vmware = []
 hide_hv_with_ept = []
@@ -14,22 +12,51 @@ name = "hypervisor"
 path = "src/lib.rs"
 
 [dependencies]
-x86 = "0.52.0" # https://crates.io/crates/x86
-x86_64 = "0.15.0" # https://crates.io/crates/x86_64
-thiserror-no-std = "2.0.2" # https://crates.io/crates/thiserror-no-std
-bitfield = "0.15.0" # https://crates.io/crates/bitfield
-bit_field = "0.10.2" # https://crates.io/crates/bit_field
-bitflags = "2.4.1" # https://crates.io/crates/bitflags
-elain = "0.3.0" # https://crates.io/crates/elain
-lazy_static = { version = "1.4.0", features = ["spin_no_std"] } # https://crates.io/crates/lazy_static
-obfstr = "0.4.3" # https://crates.io/crates/obfstr/
-static_assertions = "1.1.0" # https://crates.io/crates/static_assertions
-log = "0.4.20" # https://crates.io/crates/log
-bstr = { version = "1.9.0", default-features = false } # https://crates.io/crates/bstr
-derivative = { version = "2.2.0", features = ["use_core"]} # https://crates.io/crates/derivative
-spin = "0.9" # https://crates.io/crates/spin
-lde = "0.3.0" # https://crates.io/crates/lde
-num-traits = { version = "0.2.19", default-features = false } # https://crates.io/crates/num-traits
-num-derive = { version = "0.4.2", default-features = false } # https://crates.io/crates/num-derive
-widestring = { version = "1.1.0", default-features = false, features = ["alloc"] } # https://crates.io/crates/widestring
+# CPU / arch crates
+x86 = "0.52.0"                        # latest on crates.io for x86 :contentReference[oaicite:0]{index=0}
+x86_64 = "0.15.2"                     # latest x86_64 on docs.rs (2024-11-30) :contentReference[oaicite:1]{index=1}
+
+# error handling (no-std)
+thiserror-no-std = "2.0.2"            # still current for the no-std variant :contentReference[oaicite:2]{index=2}
+
+# bit-level helpers
+bitfield = "0.19.2"                   # current line (with matching bitfield-macros 0.19.x) :contentReference[oaicite:3]{index=3}
+bit_field = "0.10.3"                  # latest bit_field (docs.rs shows 0.10.3) :contentReference[oaicite:4]{index=4}
+bitflags = "2.9.4"                    # latest 2.x line on crates.io keyword page (2025) :contentReference[oaicite:5]{index=5}
+
+# layout / alignment helpers
+elain = "0.3.1"                       # updated const-generic alignment crate (2025 page shows 0.3.1) :contentReference[oaicite:6]{index=6}
+
+# globals
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }  # 1.4.0 is still the latest published lazy_static
+
+# string obfuscation
+obfstr = "0.4.4"                      # latest obfstr (2024-10-05) :contentReference[oaicite:7]{index=7}
+
+# compile-time checks
+static_assertions = "1.1.0"           # still current
+
+# logging
+log = "0.4.28"                        # latest log (2025-09-03) :contentReference[oaicite:8]{index=8}
+
+# byte-string utils (no_std mode)
+bstr = { version = "1.12.1", default-features = false }  # latest bstr on docs.rs (1.12.1) :contentReference[oaicite:9]{index=9}
+
+# derives that work in core
+derivative = { version = "2.2.0", features = ["use_core"] }  # 2.2.0 is still the newest :contentReference[oaicite:10]{index=10}
+
+# sync primitives for no_std
+spin = "0.10.0"                       # latest spin on docs.rs :contentReference[oaicite:11]{index=11}
+
+# disassembler / decoder helper you already had
+lde = "0.3.0"                         # couldn’t find a newer published version to bump to, keep as-is
+
+# numeric helpers
+num-traits = { version = "0.2.19", default-features = false }   # latest num-traits (2025-05-03) :contentReference[oaicite:12]{index=12}
+num-derive = { version = "0.4.2", default-features = false }    # latest num-derive (2024-02-06) :contentReference[oaicite:13]{index=13}
+
+# wide strings but still alloc-only so we stay no_std-friendly
+widestring = { version = "1.1.0", default-features = false, features = ["alloc"] }  # latest widestring (2025-10-08) :contentReference[oaicite:14]{index=14}
+
+# project-local shared crate
 shared = { path = "../shared" }

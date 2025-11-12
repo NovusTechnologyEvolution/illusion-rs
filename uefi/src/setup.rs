@@ -1,6 +1,6 @@
 //! Provides functionality to nullify the relocation table of a loaded UEFI image,
-//! preventing UEFI from relocating hypervisor code during the transition from
-//! physical to virtual addressing. This is useful for ensuring a stable memory layout in hypervisor development.
+//! record the image base for later virtualization handoff, and register allocations
+//! in the shared hook manager.
 
 use {
     alloc::boxed::Box,
@@ -13,93 +13,65 @@ use {
         },
     },
     log::debug,
-    uefi::{prelude::BootServices, proto::loaded_image::LoadedImage},
+    uefi::{boot, proto::loaded_image::LoadedImage},
 };
 
 /// We remember the image base we discovered during setup so later code
 /// (like the processor/virtualization handoff) can jump into it.
 static IMAGE_BASE: AtomicU64 = AtomicU64::new(0);
 
-/// Sets up the hypervisor by recording the image base, creating a dummy page, initializing the shared hook manager, and nullifying relocations.
+/// Run all setup work that previously needed `&BootServices`.
 ///
-/// # Arguments
-///
-/// * `boot_services` - A reference to the UEFI boot services table.
-///
-/// # Returns
-///
-/// Returns a `uefi::Result` indicating success or failure.
-pub fn setup(boot_services: &BootServices) -> uefi::Result<()> {
-    let loaded_image = boot_services.open_protocol_exclusive::<LoadedImage>(boot_services.image_handle())?;
+/// With uefi 0.36.x we can reach everything through `uefi::boot`.
+pub fn setup() -> uefi::Result<()> {
+    // open the currently running image
+    let loaded_image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle())?;
+
+    // make the base available to other modules and to the shared hook manager
     record_image_base(&loaded_image);
 
-    let dummpy_page_pa = create_dummy_page(0xFF);
-    HookManager::initialize_shared_hook_manager(dummpy_page_pa);
+    // allocate a dummy page filled with 0xFF and hand it to the global hook manager
+    let dummy_page_pa = create_dummy_page(0xFF);
+    HookManager::initialize_shared_hook_manager(dummy_page_pa);
 
+    // also store the base globally for the VM-entry handoff
     let image_base = loaded_image.info().0 as u64;
-
-    // make it available to other modules
     IMAGE_BASE.store(image_base, Ordering::Relaxed);
 
+    // stop UEFI / OS from relocating our code
     zap_relocations(image_base);
 
     Ok(())
 }
 
-/// Give other modules access to the image base we found during setup.
-/// Returns 0 if setup hasn't run yet.
+/// Allow the processor code to grab the image base we found in setup.
 pub fn get_recorded_image_base() -> u64 {
     IMAGE_BASE.load(Ordering::Relaxed)
 }
 
-/// Records the base address and size of the loaded UEFI image.
-///
-/// This function retrieves the base address and size of the loaded UEFI image
-/// and records this information for memory tracking purposes.
-///
-/// # Arguments
-///
-/// * `loaded_image` - A reference to the loaded UEFI image.
+/// Records the base address and size of the loaded UEFI image
+/// in the shared hook manager.
 pub fn record_image_base(loaded_image: &LoadedImage) {
     let (image_base, image_size) = loaded_image.info();
     let image_range = image_base as usize..(image_base as usize + image_size as usize);
     debug!("Loaded image base: {:#x?}", image_range);
 
-    // Lock the shared hook manager
     let mut hook_manager = SHARED_HOOK_MANAGER.lock();
     hook_manager.record_allocation(image_base as usize, image_size as usize);
 }
 
 /// Creates a dummy page filled with a specific byte value.
-///
-/// This function allocates a page of memory and fills it with a specified byte value.
-/// The address of the dummy page is stored in a global variable for access by multiple cores/threads/processors.
-///
-/// # Arguments
-///
-/// * `fill_byte` - The byte value to fill the page with.
 pub fn create_dummy_page(fill_byte: u8) -> u64 {
     let mut dummy_page = unsafe { box_zeroed::<Page>() };
-    dummy_page.0.iter_mut().for_each(|byte| *byte = fill_byte);
-    let dummy_page_pa = Box::into_raw(dummy_page) as u64;
-    dummy_page_pa
+    dummy_page.0.iter_mut().for_each(|b| *b = fill_byte);
+    Box::into_raw(dummy_page) as u64
 }
 
 /// Nullifies the relocation table of the loaded UEFI image to prevent relocation.
-///
-/// This function modifies the loaded image's PE header to zero out the relocation table,
-/// preventing UEFI from applying patches to the hypervisor code during the transition
-/// from physical to virtual addressing by the operating system.
-///
-/// # Arguments
-///
-/// * `image_base` - The base address of the loaded UEFI image.
 pub fn zap_relocations(image_base: u64) {
-    // Unsafe block to directly modify the PE header of the loaded image.
-    // This operation nullifies the relocation table to prevent UEFI from
-    // applying relocations to the hypervisor code.
     unsafe {
-        *((image_base + 0x128) as *mut u32) = 0; // Zero out the relocation table offset.
-        *((image_base + 0x12c) as *mut u32) = 0; // Zero out the relocation table size.
+        // PE header offsets from the original project
+        *((image_base + 0x128) as *mut u32) = 0;
+        *((image_base + 0x12c) as *mut u32) = 0;
     }
 }

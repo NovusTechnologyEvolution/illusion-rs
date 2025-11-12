@@ -4,7 +4,8 @@ use {
     alloc::{borrow::ToOwned, boxed::Box, vec::Vec},
     uefi::{
         CStr16, Identify,
-        prelude::*,
+        boot::{self, HandleBuffer, SearchType},
+        cstr16,
         proto::{
             device_path::{
                 DevicePath,
@@ -15,7 +16,6 @@ use {
                 fs::SimpleFileSystem,
             },
         },
-        table::boot::{HandleBuffer, SearchType},
     },
 };
 
@@ -23,64 +23,44 @@ const WINDOWS_BOOT_MANAGER_PATH: &CStr16 = cstr16!(r"\EFI\Microsoft\Boot\bootmgf
 const HYPERVISOR_PATH: &CStr16 = cstr16!(r"\EFI\Boot\illusion.efi");
 
 /// Finds the device path for a given file path.
-///
-/// # Arguments
-///
-/// * `boot_services` - A reference to the UEFI boot services.
-/// * `path` - The file path to search for, as a `CStr16`.
-///
-/// # Returns
-///
-/// If a device containing the specified file is found, this function returns an `Option` containing
-/// a `DevicePath` to the file. If no such device is found, it returns `None`.
-pub(crate) fn find_device_path(boot_services: &BootServices, path: &CStr16) -> Option<Box<DevicePath>> {
-    let handles: HandleBuffer = boot_services.locate_handle_buffer(SearchType::ByProtocol(&SimpleFileSystem::GUID)).ok()?;
+pub(crate) fn find_device_path(path: &CStr16) -> Option<Box<DevicePath>> {
+    // Get all handles that implement SimpleFileSystem
+    let handles: HandleBuffer = boot::locate_handle_buffer(SearchType::ByProtocol(&SimpleFileSystem::GUID)).ok()?;
 
+    // Look through each handle to see if the file exists on it
     handles.iter().find_map(|handle| {
-        let mut file_system = boot_services.open_protocol_exclusive::<SimpleFileSystem>(*handle).ok()?;
+        // Open the filesystem for this handle
+        let mut file_system = boot::open_protocol_exclusive::<SimpleFileSystem>(*handle).ok()?;
 
+        // Open its root directory
         let mut root = file_system.open_volume().ok()?;
+
+        // Try to open the file we care about; if this fails, this handle isn't it
         root.open(path, FileMode::Read, FileAttribute::READ_ONLY).ok()?;
 
-        let device_path = boot_services.open_protocol_exclusive::<DevicePath>(*handle).ok()?;
+        // We also need the DevicePath protocol for this handle
+        let device_path = boot::open_protocol_exclusive::<DevicePath>(*handle).ok()?;
 
+        // Build a new device path that is: <device_path> + <file_path>
         let mut storage = Vec::new();
-        let boot_path = device_path
-            .node_iter()
-            .fold(DevicePathBuilder::with_vec(&mut storage), |builder, item| builder.push(&item).unwrap())
-            .push(&FilePath { path_name: path })
-            .ok()?
-            .finalize()
-            .ok()?;
+        let mut builder = DevicePathBuilder::with_vec(&mut storage);
+
+        for node in device_path.node_iter() {
+            builder = builder.push(&node).ok()?;
+        }
+
+        let boot_path = builder.push(&FilePath { path_name: path }).ok()?.finalize().ok()?;
 
         Some(boot_path.to_owned())
     })
 }
 
 /// Finds the device path of the Windows boot manager.
-///
-/// # Arguments
-///
-/// * `boot_services` - A reference to the UEFI boot services.
-///
-/// # Returns
-///
-/// If a device containing the Windows boot manager is found, this function returns an `Option` containing
-/// a `DevicePath` to the file. If no such device is found, it returns `None`.
-pub(crate) fn find_windows_boot_manager(boot_services: &BootServices) -> Option<Box<DevicePath>> {
-    find_device_path(boot_services, WINDOWS_BOOT_MANAGER_PATH)
+pub(crate) fn find_windows_boot_manager() -> Option<Box<DevicePath>> {
+    find_device_path(WINDOWS_BOOT_MANAGER_PATH)
 }
 
 /// Finds the device path of the Illusion hypervisor.
-///
-/// # Arguments
-///
-/// * `boot_services` - A reference to the UEFI boot services.
-///
-/// # Returns
-///
-/// If a device containing the Illusion hypervisor is found, this function returns an `Option` containing
-/// a `DevicePath` to the file. If no such device is found, it returns `None`.
-pub(crate) fn find_hypervisor(boot_services: &BootServices) -> Option<Box<DevicePath>> {
-    find_device_path(boot_services, HYPERVISOR_PATH)
+pub(crate) fn find_hypervisor() -> Option<Box<DevicePath>> {
+    find_device_path(HYPERVISOR_PATH)
 }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-env_logger = "0.11.3"
-log = "0.4.22"
-dunce = "1.0.4"
-ctrlc = "3.4.4"
+env_logger = "0.11.8"   # https://crates.io/crates/env_logger
+log = "0.4.28"          # https://crates.io/crates/log
+dunce = "1.0.5"         # https://crates.io/crates/dunce
+ctrlc = "3.5.1"         # https://crates.io/crates/ctrlc

@@ -5,14 +5,14 @@ edition = "2024"
 
 [dependencies]
 ntapi = "0.4.1" # https://crates.io/crates/ntapi
-log = { version = "0.4.20", default-features = false }
-thiserror = "1.0.63" # https://crates.io/crates/thiserror
+log = { version = "0.4.27", default-features = false } # https://crates.io/crates/log
+thiserror = "2.0.17" # https://crates.io/crates/thiserror
 x86 = "0.52.0" # https://crates.io/crates/x86
-obfstr = "0.4.3" # https://crates.io/crates/obfstr
+obfstr = "0.4.4" # https://crates.io/crates/obfstr
 shared = { path = "../shared" }
 
 [dependencies.windows-sys]
-version = "0.59.0"
+version = "0.60.2"
 features = [
     "Win32_Foundation",
     "Win32_Security",

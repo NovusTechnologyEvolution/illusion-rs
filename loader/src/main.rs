@@ -3,32 +3,43 @@
 
 mod images;
 
-use uefi::{prelude::*, table::boot::LoadImageSource};
+use {
+    core::time::Duration,
+    uefi::{
+        boot::{self, LoadImageSource},
+        prelude::*,
+        proto::BootPolicy,
+    },
+};
 
 #[entry]
-unsafe fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
-    if let Err(error) = uefi::helpers::init(&mut system_table) {
+fn main() -> Status {
+    // 0.36+ style init
+    if let Err(error) = uefi::helpers::init() {
         log::error!("Failed to initialize UEFI services ({:?})", error);
         return Status::ABORTED;
     }
 
+    let image_handle = boot::image_handle();
+
     log::info!("Searching Illusion hypervisor (illusion.efi)..");
 
-    match images::find_hypervisor(system_table.boot_services()) {
+    match images::find_hypervisor() {
         Some(hypervisor_device_path) => {
             log::info!("Found! Loading hypervisor into memory..");
 
-            match system_table.boot_services().load_image(
+            match boot::load_image(
                 image_handle,
                 LoadImageSource::FromDevicePath {
                     device_path: &hypervisor_device_path,
-                    from_boot_manager: false,
+                    // normal case: load exactly this file
+                    boot_policy: BootPolicy::ExactMatch,
                 },
             ) {
                 Ok(handle) => {
-                    log::info!("Loaded hypervisor into mermoy, starting..");
+                    log::info!("Loaded hypervisor into memory, starting..");
 
-                    if let Err(error) = system_table.boot_services().start_image(handle) {
+                    if let Err(error) = boot::start_image(handle) {
                         log::error!("Failed to start hypervisor ({:?})", error);
                         return Status::ABORTED;
                     }
@@ -47,23 +58,24 @@ unsafe fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Sta
 
     log::info!("Searching Windows boot manager (bootmgfw.efi)..");
 
-    match images::find_windows_boot_manager(system_table.boot_services()) {
+    match images::find_windows_boot_manager() {
         Some(bootmgr_device_path) => {
             log::info!("Found! Loading boot manager into memory..");
 
-            system_table.boot_services().stall(3_000_000);
+            // stall now takes Duration
+            boot::stall(Duration::from_micros(3_000_000));
 
-            match system_table.boot_services().load_image(
+            match boot::load_image(
                 image_handle,
                 LoadImageSource::FromDevicePath {
                     device_path: &bootmgr_device_path,
-                    from_boot_manager: false,
+                    boot_policy: BootPolicy::ExactMatch,
                 },
             ) {
                 Ok(handle) => {
                     log::info!("Loaded boot manager into memory, starting..");
 
-                    if let Err(error) = system_table.boot_services().start_image(handle) {
+                    if let Err(error) = boot::start_image(handle) {
                         log::error!("Failed to start boot manager ({:?})", error);
                         return Status::ABORTED;
                     }
