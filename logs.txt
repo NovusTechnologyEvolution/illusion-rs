@@ -5,28 +5,17 @@ vcpu-0 DEBUG: Starting hypervisor on all processors
 vcpu-0 INFO: start_hypervisor_on_all_processors: ENTRY
 vcpu-0 INFO: Total processors: 8, enabled: 8
 vcpu-0 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-0 DEBUG: capture_registers → already = true
-vcpu-0 DEBUG: CPU already virtualized
-vcpu-0 DEBUG: Starting hypervisor on 7 APs
-vcpu-1 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-1 DEBUG: capture_registers → already = true
-vcpu-1 DEBUG: CPU already virtualized
-vcpu-2 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-2 DEBUG: capture_registers → already = true
-vcpu-2 DEBUG: CPU already virtualized
-vcpu-3 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-3 DEBUG: capture_registers → already = true
-vcpu-3 DEBUG: CPU already virtualized
-vcpu-4 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-4 DEBUG: capture_registers → already = true
-vcpu-4 DEBUG: CPU already virtualized
-vcpu-5 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-5 DEBUG: capture_registers → already = true
-vcpu-5 DEBUG: CPU already virtualized
-vcpu-6 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-6 DEBUG: capture_registers → already = true
-vcpu-6 DEBUG: CPU already virtualized
-vcpu-7 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-7 DEBUG: capture_registers → already = true
-vcpu-7 DEBUG: CPU already virtualized
-vcpu-0 INFO: HV installed successfully!
+vcpu-0 DEBUG: capture_registers → already = false
+vcpu-0 DEBUG: virtualizing CPU …
+vcpu-0 DEBUG: virtualize_system(): landing=0x96fed00, host_stack_top=0xfbc5020
+vcpu-0 DEBUG: landing(): calling start_hypervisor
+vcpu-0 DEBUG: Starting hypervisor
+vcpu-0 INFO: CPU is Intel
+vcpu-0 INFO: Virtual Machine Extension (VMX) technology is supported
+vcpu-0 INFO: Memory Type Range Registers (MTRRs) are supported
+vcpu-0 INFO: Extended Page Tables (EPT) are supported
+vcpu-0 DEBUG: CPU is supported
+vcpu-0 DEBUG: Building identity map for page tables
+vcpu-0 DEBUG: Identity map built successfully
+vcpu-0 DEBUG: VM initialized
+vcpu-0 DEBUG: VMX enabled

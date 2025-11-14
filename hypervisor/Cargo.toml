@@ -13,50 +13,52 @@ path = "src/lib.rs"
 
 [dependencies]
 # CPU / arch crates
-x86 = "0.52.0"                        # latest on crates.io for x86 :contentReference[oaicite:0]{index=0}
-x86_64 = "0.15.2"                     # latest x86_64 on docs.rs (2024-11-30) :contentReference[oaicite:1]{index=1}
+x86 = "0.52.0"                        # latest on crates.io for x86
+x86_64 = "0.15.2"                     # latest x86_64 on docs.rs
 
 # error handling (no-std)
-thiserror-no-std = "2.0.2"            # still current for the no-std variant :contentReference[oaicite:2]{index=2}
+thiserror-no-std = "2.0.2"            # no-std error handling
 
 # bit-level helpers
-bitfield = "0.19.2"                   # current line (with matching bitfield-macros 0.19.x) :contentReference[oaicite:3]{index=3}
-bit_field = "0.10.3"                  # latest bit_field (docs.rs shows 0.10.3) :contentReference[oaicite:4]{index=4}
-bitflags = "2.9.4"                    # latest 2.x line on crates.io keyword page (2025) :contentReference[oaicite:5]{index=5}
+bitfield = "0.19.2"                   # bitfields
+bit_field = "0.10.3"
+bitflags = "2.9.4"
 
 # layout / alignment helpers
-elain = "0.3.1"                       # updated const-generic alignment crate (2025 page shows 0.3.1) :contentReference[oaicite:6]{index=6}
+elain = "0.3.1"                       # const-generic alignment crate
 
 # globals
-lazy_static = { version = "1.4.0", features = ["spin_no_std"] }  # 1.4.0 is still the latest published lazy_static
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 
 # string obfuscation
-obfstr = "0.4.4"                      # latest obfstr (2024-10-05) :contentReference[oaicite:7]{index=7}
+obfstr = "0.4.4"
 
 # compile-time checks
-static_assertions = "1.1.0"           # still current
+static_assertions = "1.1.0"
 
-# logging
-log = "0.4.28"                        # latest log (2025-09-03) :contentReference[oaicite:8]{index=8}
+# logging – unified with UEFI:
+# - no std
+# - all levels enabled in debug and release
+log = { version = "0.4.28", default-features = false, features = ["max_level_trace", "release_max_level_trace"] }
 
 # byte-string utils (no_std mode)
-bstr = { version = "1.12.1", default-features = false }  # latest bstr on docs.rs (1.12.1) :contentReference[oaicite:9]{index=9}
+bstr = { version = "1.12.1", default-features = false }
 
 # derives that work in core
-derivative = { version = "2.2.0", features = ["use_core"] }  # 2.2.0 is still the newest :contentReference[oaicite:10]{index=10}
+derivative = { version = "2.2.0", features = ["use_core"] }
 
 # sync primitives for no_std
-spin = "0.10.0"                       # latest spin on docs.rs :contentReference[oaicite:11]{index=11}
+spin = "0.10.0"
 
 # disassembler / decoder helper you already had
-lde = "0.3.0"                         # couldn’t find a newer published version to bump to, keep as-is
+lde = "0.3.0"
 
 # numeric helpers
-num-traits = { version = "0.2.19", default-features = false }   # latest num-traits (2025-05-03) :contentReference[oaicite:12]{index=12}
-num-derive = { version = "0.4.2", default-features = false }    # latest num-derive (2024-02-06) :contentReference[oaicite:13]{index=13}
+num-traits = { version = "0.2.19", default-features = false }
+num-derive = { version = "0.4.2", default-features = false }
 
 # wide strings but still alloc-only so we stay no_std-friendly
-widestring = { version = "1.1.0", default-features = false, features = ["alloc"] }  # latest widestring (2025-10-08) :contentReference[oaicite:14]{index=14}
+widestring = { version = "1.1.0", default-features = false, features = ["alloc"] }
 
 # project-local shared crate
 shared = { path = "../shared" }

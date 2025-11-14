@@ -51,6 +51,11 @@ pub struct GuestRegisters {
 
 // declare the symbol implemented by the asm below
 unsafe extern "efiapi" {
+    /// Captures the current CPU state into `GuestRegisters`.
+    ///
+    /// Returns `false` on initial entry (processor not yet virtualized). The
+    /// “already virtualized” state is communicated via `guest_registers.rax`
+    /// after the hypervisor has run and sets it to 1 before returning.
     pub fn capture_registers(registers: &mut GuestRegisters) -> bool;
 }
 
@@ -87,8 +92,10 @@ capture_registers:
     mov rax, [rsp]
     mov [rcx + {rip_off}], rax
 
-    // return true
-    mov al, 1
+    // Return false to indicate this is the initial capture path.
+    // Hypervisor code will later set guest_registers.rax = 1 on VM-exit
+    // return to signal "already virtualized".
+    xor eax, eax
     ret
 "#,
     rax_off = const offset_of!(GuestRegisters, rax),

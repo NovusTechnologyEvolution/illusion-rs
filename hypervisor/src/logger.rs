@@ -22,18 +22,47 @@ const UART_OFFSET_LINE_STATUS: u16 = 0x5;
 const UART_OFFSET_TRANSMITTER_HOLDING_BUFFER: u16 = 0x0;
 
 /// Global raw pointer to the logger. Kept as a raw pointer so we don't form
-/// `&T` from a `static mut`, which is what triggered your warning.
+/// `&T` from a `static mut`, which is what triggered the Rust 2024 warning.
 static mut SERIAL_LOGGER: *const SerialLogger = core::ptr::null();
 
 /// Initialize the serial logger and install it as the global `log` logger.
+///
+/// This function is **idempotent**: if the logger has already been initialized
+/// (for example, by the UEFI module), calling it again will *not* attempt to
+/// register another global logger. Instead, it will simply update the global
+/// max log level and return. This allows both the UEFI module and the
+/// hypervisor to call `logger::init` safely without "fighting" over ownership
+/// of the `log` logger.
 pub fn init(port: SerialPort, level: log::LevelFilter) {
+    unsafe {
+        // If we already have a global logger, assume it was initialized by UEFI
+        // (or an earlier phase) and just update the max level. Avoid calling
+        // `log::set_logger` again, which would otherwise return an error and
+        // panic if we unwrap it.
+        if !SERIAL_LOGGER.is_null() {
+            log::set_max_level(level);
+            return;
+        }
+    }
+
     // Allocate and leak, so we have a `'static` logger for `log::set_logger`.
     let logger = SerialLogger::new(port);
     let logger_ref: &'static SerialLogger = Box::leak(Box::new(logger));
 
     unsafe {
         SERIAL_LOGGER = logger_ref as *const SerialLogger;
-        log::set_logger(logger_ref).map(|()| log::set_max_level(level)).unwrap();
+
+        // Install as the global logger. If some other logger has already been
+        // registered before this very first call, we don't want to crash the
+        // hypervisor over logging, so just ignore the error and still update
+        // the max level.
+        if log::set_logger(logger_ref).is_ok() {
+            log::set_max_level(level);
+        } else {
+            // Some other logger is already installed; keep SERIAL_LOGGER around
+            // so `global_logger()` can still use it directly if desired.
+            log::set_max_level(level);
+        }
     }
 }
 
