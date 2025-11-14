@@ -11,8 +11,8 @@ name = "illusion"
 path = "src/main.rs"
 
 [dependencies]
-# drop "global_allocator" so we don't collide with the hypervisor's allocator
-uefi = { version = "0.36", features = ["panic_handler", "logger", "alloc"] }
+uefi = { version = "0.36", default-features = false, features = ["panic_handler", "alloc"] }
+
 log = { version = "0.4.28", default-features = false }
 once_cell = "1.21.3"
 spin = "0.10.0"
