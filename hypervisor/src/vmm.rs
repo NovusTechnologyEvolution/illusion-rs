@@ -36,6 +36,7 @@ use {
         },
         windows::eprocess::ProcessInformation,
     },
+    alloc::boxed::Box,
     log::*,
     x86::{
         msr::IA32_VMX_EPT_VPID_CAP,
@@ -64,7 +65,16 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
         Err(e) => panic!("CPU is not supported: {:?}", e),
     };
 
-    let mut vm = unsafe { Vm::zeroed().assume_init() };
+    // CRITICAL FIX: Allocate VM on heap instead of stack to prevent stack overflow
+    // The Vm structure is ~4.2MB which is way too large for stack allocation
+    debug!("Allocating VM structure on heap (size: ~4.2MB)");
+    let mut vm = unsafe {
+        let boxed = Box::<Vm>::new_zeroed();
+        boxed.assume_init()
+    };
+
+    debug!("VM structure allocated successfully");
+
     match vm.init(guest_registers) {
         Ok(_) => debug!("VM initialized"),
         Err(e) => panic!("Failed to initialize VM: {:?}", e),

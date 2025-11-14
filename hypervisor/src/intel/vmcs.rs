@@ -122,9 +122,11 @@ impl Vmcs {
     ///
     /// # Arguments
     /// * `host_descriptor` - Descriptor tables for the host.
-    /// * `host_paging` - Paging tables for the host.
+    /// * `pml4_pa` - Physical address of the host PML4 for CR3.
     pub fn setup_host_registers_state(host_descriptor: &Descriptors, pml4_pa: u64) -> Result<(), HypervisorError> {
         log::debug!("Setting up Host Registers State");
+
+        let host_idtr = sidt();
 
         vmwrite(vmcs::host::CR0, Cr0::read_raw());
         vmwrite(vmcs::host::CR3, pml4_pa);
@@ -135,7 +137,7 @@ impl Vmcs {
 
         vmwrite(vmcs::host::TR_BASE, host_descriptor.tss.base);
         vmwrite(vmcs::host::GDTR_BASE, host_descriptor.gdtr.base as u64);
-        vmwrite(vmcs::host::IDTR_BASE, u64::MAX); // Bogus. No proper exception handling.
+        vmwrite(vmcs::host::IDTR_BASE, host_idtr.base as u64);
 
         log::debug!("Host Registers State setup successfully!");
 
@@ -201,7 +203,7 @@ impl Vmcs {
         vmwrite(vmcs::control::CR4_READ_SHADOW, Cr4::read_raw() & !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits());
 
         vmwrite(vmcs::control::MSR_BITMAPS_ADDR_FULL, msr_bitmap);
-        //vmwrite(vmcs::control::EXCEPTION_BITMAP, 1u64 << (ExceptionInterrupt::Breakpoint as u32));
+        // vmwrite(vmcs::control::EXCEPTION_BITMAP, 1u64 << (ExceptionInterrupt::Breakpoint as u32));
 
         vmwrite(vmcs::control::EPTP_FULL, primary_eptp);
         vmwrite(vmcs::control::VPID, VPID_TAG);

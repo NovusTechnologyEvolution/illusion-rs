@@ -20,7 +20,6 @@ use {
             vmxon::Vmxon,
         },
     },
-    core::mem::MaybeUninit,
     log::*,
     x86::{
         bits64::rflags::RFlags,
@@ -38,6 +37,10 @@ use {
 /// # Size
 /// - Total size in bytes: 4,204,969 bytes (0x4010B9)
 /// - Total size in pages: 1027 pages (0x403)
+///
+/// # Important Note
+/// This structure is very large (~4.2MB) and MUST be allocated on the heap, never on the stack.
+/// Use `Box::new_zeroed()` to allocate it safely.
 pub struct Vm {
     /// The VMXON (Virtual Machine Extensions On) region for the VM.
     /// - Aligned to 4096 bytes (0x1000)
@@ -91,11 +94,6 @@ pub struct Vm {
 }
 
 impl Vm {
-    /// Creates a new zeroed VM instance.
-    pub fn zeroed() -> MaybeUninit<Self> {
-        MaybeUninit::zeroed()
-    }
-
     /// Initializes a new VM instance with specified guest registers.
     ///
     /// Sets up the necessary environment for the VM, including VMCS initialization, host and guest
@@ -107,8 +105,7 @@ impl Vm {
     ///
     /// # Returns
     ///
-    /// Returns `Ok(Self)` with a newly created `Vm` instance, or an `Err(HypervisorError)` if
-    /// any part of the setup fails.
+    /// Returns `Ok(())` on success, or an `Err(HypervisorError)` if any part of the setup fails.
     pub fn init(&mut self, guest_registers: &GuestRegisters) -> Result<(), HypervisorError> {
         trace!("Creating VM");
 

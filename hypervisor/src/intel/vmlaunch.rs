@@ -1,7 +1,7 @@
 //! VM launch stub for Intel VMX.
 //!
-//! This is the same pattern as the capture stub: small assembly body, but a long list of
-//! named offsets so Rust code can refer to guest register slots in a structured way.
+//! Small assembly stub that actually executes VMLAUNCH/VMRESUME and returns
+//! the resulting RFLAGS so Rust code can check for VM-instruction success/failure.
 
 use {
     crate::intel::capture::GuestRegisters,
@@ -11,7 +11,11 @@ use {
 unsafe extern "efiapi" {
     /// Tries to launch a VM using the state laid out in `registers`.
     ///
-    /// Return value and exact calling convention are coming from the uploaded stub, so we keep it.
+    /// `launched`:
+    ///   - 0 â†’ first entry, use VMLAUNCH
+    ///   - 1 â†’ subsequent entries, use VMRESUME
+    ///
+    /// Returns the CPU RFLAGS after executing the VMX instruction.
     pub fn launch_vm(registers: &mut GuestRegisters, launched: u64) -> u64;
 }
 
@@ -22,14 +26,65 @@ pub fn vmlaunch(registers: &mut GuestRegisters, launched: u64) -> u64 {
 
 global_asm!(
     r#"
-    .global launch_vm
+    .globl launch_vm
 
+    // Windows x64 / EFI calling convention:
+    //   RCX = &mut GuestRegisters
+    //   RDX = has_launched (0 = first entry -> VMLAUNCH, 1 = VMRESUME)
 launch_vm:
-    // your uploaded file only set a value and returned — keep that.
-    mov     rax, 0
+    // Save callee-saved registers we might clobber in this stub.
+    push    rbx
+    push    rbp
+    push    rdi
+    push    rsi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+
+    // NOTE:
+    // For now we don't synchronize GuestRegisters <-> CPU GPRs here.
+    // VM entry/exit uses VMCS-managed control state, and our Rust code
+    // reads/writes VMCS guest fields directly (RIP/RSP/RFLAGS, etc.).
+    // This stub's job is just:
+    //   - pick VMLAUNCH vs VMRESUME
+    //   - execute it
+    //   - return the resulting RFLAGS so vm_succeed() can decode errors.
+
+    // Decide between VMLAUNCH / VMRESUME based on `launched`.
+    test    rdx, rdx
+    jnz     1f
+
+    // First time: VMLAUNCH
+    vmlaunch
+    jmp     2f
+
+1:
+    // Subsequent entries: VMRESUME
+    vmresume
+
+2:
+    // On return from the VMX instruction (success or VMfail),
+    // grab the current RFLAGS and hand them back in RAX.
+    pushfq
+    pop     rax
+
+    // Restore callee-saved registers.
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rsi
+    pop     rdi
+    pop     rbp
+    pop     rbx
+
     ret
 
-    /* {registers_rax} {registers_rbx} {registers_rcx} {registers_rdx}
+    /* Keep these offsets wired up for tooling/consistency; they aren't
+       used in this stub but mirror the capture stub layout.
+
+       {registers_rax} {registers_rbx} {registers_rcx} {registers_rdx}
        {registers_rsi} {registers_rdi} {registers_rbp} {registers_rsp}
        {registers_r8} {registers_r9} {registers_r10} {registers_r11}
        {registers_r12} {registers_r13} {registers_r14} {registers_r15}
