@@ -237,17 +237,6 @@ struct Pd(Table);
 #[derive(Debug, Clone, Copy)]
 pub struct Pt(Table);
 
-/*
-/// Represents a Page-Table Entry (PTE) that maps a 4-KByte Page.
-///
-/// PTEs are the lowest level in the standard x86-64 paging hierarchy and are used to map individual
-/// pages to physical addresses.
-///
-/// Reference: Intel® 64 and IA-32 Architectures Software Developer's Manual: 4.5 Paging
-#[derive(Debug, Clone, Copy)]
-pub struct Pt(Table);
-*/
-
 /// General struct to represent a table in the standard paging structure.
 ///
 /// This struct is used as a basis for PML4, PDPT, PD, and PT. It contains an array of entries

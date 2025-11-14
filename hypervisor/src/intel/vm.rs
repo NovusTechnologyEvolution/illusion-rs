@@ -20,6 +20,7 @@ use {
             vmxon::Vmxon,
         },
     },
+    core::mem::MaybeUninit,
     log::*,
     x86::{
         bits64::rflags::RFlags,
@@ -40,7 +41,7 @@ use {
 ///
 /// # Important Note
 /// This structure is very large (~4.2MB) and MUST be allocated on the heap, never on the stack.
-/// Use `Box::new_zeroed()` to allocate it safely.
+/// Use `Box::new_zeroed()` or an equivalent heap allocation method to allocate it safely.
 pub struct Vm {
     /// The VMXON (Virtual Machine Extensions On) region for the VM.
     /// - Aligned to 4096 bytes (0x1000)
@@ -94,6 +95,11 @@ pub struct Vm {
 }
 
 impl Vm {
+    /// Creates a new zeroed VM instance.
+    pub fn zeroed() -> MaybeUninit<Self> {
+        MaybeUninit::zeroed()
+    }
+
     /// Initializes a new VM instance with specified guest registers.
     ///
     /// Sets up the necessary environment for the VM, including VMCS initialization, host and guest
@@ -286,7 +292,7 @@ impl Vm {
             return Err(HypervisorError::UnknownVMExitReason);
         };
 
-        return Ok(basic_exit_reason);
+        Ok(basic_exit_reason)
     }
 
     /// Verifies that the `launch_vm` function executed successfully.

@@ -1,13 +1,13 @@
 vcpu-0 INFO: The Matrix is an illusion
 vcpu-0 DEBUG: Setting up the hypervisor
-vcpu-0 DEBUG: Loaded image base: 0x96fd000..0xd73b000
+vcpu-0 DEBUG: Loaded image base: 0x96fe000..0xd73b000
 vcpu-0 DEBUG: Starting hypervisor on all processors
 vcpu-0 INFO: start_hypervisor_on_all_processors: ENTRY
 vcpu-0 INFO: Total processors: 8, enabled: 8
 vcpu-0 DEBUG: start_hypervisor_on_this_cpu: ENTRY
 vcpu-0 DEBUG: capture_registers → already = false
 vcpu-0 DEBUG: virtualizing CPU …
-vcpu-0 DEBUG: virtualize_system(): landing=0x96fed20, host_stack_top=0xfbc5020
+vcpu-0 DEBUG: virtualize_system(): landing=0x96ffd20, host_stack_top=0xfbc5020
 vcpu-0 DEBUG: landing(): calling start_hypervisor
 vcpu-0 DEBUG: Starting hypervisor
 vcpu-0 INFO: CPU is Intel
@@ -19,8 +19,6 @@ vcpu-0 DEBUG: Allocating VM structure on heap (size: ~4.2MB)
 vcpu-0 DEBUG: VM structure allocated successfully
 vcpu-0 DEBUG: Building identity map for page tables
 vcpu-0 DEBUG: Identity map built successfully
-vcpu-0 DEBUG: EPT: Building simplified identity map
-vcpu-0 DEBUG: EPT: Identity map complete (512 GiB mapped with 2MB pages, WB memory type)
 vcpu-0 DEBUG: VM initialized
 vcpu-0 DEBUG: VMX enabled
 vcpu-0 DEBUG: Creating a new GDT with TSS for guest
@@ -35,7 +33,7 @@ vcpu-0 DEBUG: Setting up VMCS Control Fields
 vcpu-0 DEBUG: VMCS Control Fields setup successfully!
 vcpu-0 DEBUG: VMCS activated
 vcpu-0 DEBUG: Hiding hypervisor memory... (NOTE: EPT HOOKS WON'T WORK IF THIS IS ENABLED UNLESS SHADOW PAGES ARE EXCLUDED)
-vcpu-0 DEBUG: Memory Range: start=0x96fd000, size=0x403e000
+vcpu-0 DEBUG: Memory Range: start=0x96fe000, size=0x403d000
 vcpu-0 DEBUG: Memory Range: start=0xfbc1020, size=0x4000
 vcpu-0 DEBUG: Hypervisor memory hidden
 vcpu-0 INFO: Launching the VM until a vmexit occurs...
