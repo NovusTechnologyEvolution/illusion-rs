@@ -1,55 +1,57 @@
 // uefi/src/processor.rs
 
 use {
-    crate::{setup::get_recorded_image_base, stack, virtualize::virtualize_system},
-    core::alloc::Layout,
+    crate::virtualize,
+    core::{ffi::c_void, mem, ptr},
     hypervisor::intel::capture::{GuestRegisters, capture_registers},
-    uefi::Status,
+    log::{debug, info},
+    uefi::{Result, boot, proto::pi::mp::MpServices},
 };
 
-/// Size of the host stack we give to the hypervisor landing code.
-const HOST_STACK_SIZE: usize = 0x4000;
+pub fn start_hypervisor_on_all_processors() -> Result<()> {
+    info!("start_hypervisor_on_all_processors: ENTRY");
 
-/// Start the hypervisor on *this* processor.
-///
-/// Old version took `&BootServices` only to match the old entry signature.
-/// With uefi 0.36.x we can reach all the UEFI services we need globally,
-/// so we drop that argument.
-pub fn start_hypervisor_on_all_processors() -> uefi::Result<()> {
-    //
-    // 1. Allocate a host stack we can switch to
-    //
-    let layout = Layout::from_size_align(HOST_STACK_SIZE, 0x10).expect("valid stack layout");
-    let host_stack_base = unsafe { stack::allocate_host_stack(layout) };
-    if host_stack_base.is_null() {
-        return Err(Status::OUT_OF_RESOURCES.into());
+    let mp_handle = boot::get_handle_for_protocol::<MpServices>()?;
+    let mp = boot::open_protocol_exclusive::<MpServices>(mp_handle)?;
+
+    let counts = mp.get_number_of_processors()?;
+    info!("Total processors: {}, enabled: {}", counts.total, counts.enabled);
+
+    start_hypervisor_on_this_cpu();
+
+    if counts.enabled > 1 {
+        debug!("Starting hypervisor on {} APs", counts.enabled - 1);
+
+        mp.startup_all_aps(true, start_hypervisor_on_ap as _, ptr::null_mut(), None, None)?;
     }
 
-    // stacks grow down; UEFI gave us the base (lower) address
-    let host_stack_top = unsafe { host_stack_base.add(HOST_STACK_SIZE) } as u64;
+    info!("HV installed successfully!");
+    Ok(())
+}
 
-    //
-    // 2. Capture current guest CPU state into the structure the hypervisor expects.
-    //
-    let mut guest_regs: GuestRegisters = unsafe { core::mem::zeroed() };
-    let ok = unsafe { capture_registers(&mut guest_regs) };
-    if !ok {
-        return Err(Status::ABORTED.into());
+extern "efiapi" fn start_hypervisor_on_ap(_arg: *mut c_void) {
+    start_hypervisor_on_this_cpu();
+}
+
+fn start_hypervisor_on_this_cpu() {
+    debug!("start_hypervisor_on_this_cpu: ENTRY");
+
+    let mut regs: GuestRegisters = unsafe { mem::zeroed() };
+
+    let already = unsafe { capture_registers(&mut regs) };
+    regs.rax = 1;
+
+    debug!("capture_registers → already = {}", already);
+
+    if !already {
+        debug!("virtualizing CPU …");
+        virtualize::virtualize_system(&regs, landing_ptr());
+    } else {
+        debug!("CPU already virtualized");
     }
+}
 
-    //
-    // 3. Figure out what to jump to.
-    //    We recorded the UEFI image base during setup(), so reuse that.
-    //
-    let landing_code = get_recorded_image_base();
-    if landing_code == 0 {
-        // setup() didn't run or didn't store it
-        return Err(Status::ABORTED.into());
-    }
-
-    //
-    // 4. Hand off to the common stack-jump + landing-jump code.
-    //    This never returns.
-    //
-    virtualize_system(&guest_regs, landing_code as usize, host_stack_top);
+/// CORRECT PATH — and landing is now pub(crate)
+fn landing_ptr() -> usize {
+    crate::virtualize::landing as usize
 }
