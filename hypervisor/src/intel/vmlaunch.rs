@@ -1,3 +1,4 @@
+// hypervisor/src/intel/vmlaunch.rs
 //! VM launch stub for Intel VMX.
 //!
 //! Small assembly stub that actually executes VMLAUNCH/VMRESUME and returns
@@ -12,8 +13,8 @@ unsafe extern "efiapi" {
     /// Tries to launch a VM using the state laid out in `registers`.
     ///
     /// `launched`:
-    ///   - 0 â†’ first entry, use VMLAUNCH
-    ///   - 1 â†’ subsequent entries, use VMRESUME
+    ///   - 0 → first entry, use VMLAUNCH
+    ///   - 1 → subsequent entries, use VMRESUME
     ///
     /// Returns the CPU RFLAGS after executing the VMX instruction.
     pub fn launch_vm(registers: &mut GuestRegisters, launched: u64) -> u64;

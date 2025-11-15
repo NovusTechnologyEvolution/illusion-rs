@@ -63,16 +63,53 @@ impl Vmcs {
 
         let idtr = sidt();
 
-        vmwrite(vmcs::guest::CR0, Cr0::read_raw());
-        vmwrite(vmcs::guest::CR3, cr3());
-        vmwrite(vmcs::guest::CR4, Cr4::read_raw());
+        // ---------------------------------------------------------------------
+        // Control registers: CR0 / CR3 / CR4
+        // ---------------------------------------------------------------------
+        //
+        // Guest CR4 must *not* have VMXE set. The host needs VMXE=1 to run VMX,
+        // but Intel requires the guest not to have VMX enabled unless you
+        // intend to support nested virtualization.
+        //
+        // So:
+        //   - Read the current CR0/CR4 from the CPU
+        //   - Mask out VMXE from CR4 for the guest
+        //   - Write those into guest CR0/CR3/CR4
+        let guest_cr0 = Cr0::read_raw();
+        let guest_cr3 = cr3();
+        let raw_cr4 = Cr4::read_raw();
+        let guest_cr4 = raw_cr4 & !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits();
 
+        vmwrite(vmcs::guest::CR0, guest_cr0);
+        vmwrite(vmcs::guest::CR3, guest_cr3);
+        vmwrite(vmcs::guest::CR4, guest_cr4);
+
+        log::debug!("Guest CR0: {:#018x}, sanitized Guest CR4: {:#018x}", guest_cr0, guest_cr4);
+
+        // Debug registers
         vmwrite(vmcs::guest::DR7, unsafe { dr7().0 as u64 });
 
+        // Guest general-purpose / control-flow state
         vmwrite(vmcs::guest::RSP, guest_registers.rsp);
         vmwrite(vmcs::guest::RIP, guest_registers.rip);
         vmwrite(vmcs::guest::RFLAGS, rflags::read().bits());
 
+        // ---------------------------------------------------------------------
+        // IA32_EFER: must be consistent with IA32E_MODE_GUEST entry controls
+        // ---------------------------------------------------------------------
+        //
+        // VM-entry is configured with IA32E_MODE_GUEST set. Intel requires:
+        //   - CR0.PG = 1
+        //   - CR4.PAE = 1
+        //   - IA32_EFER.LME = 1
+        //   - IA32_EFER.LMA = 1
+        //
+        // We mirror the host's IA32_EFER into the guest field so that
+        // the guest enters a valid long mode.
+        let guest_efer = rdmsr(msr::IA32_EFER);
+        vmwrite(vmcs::guest::IA32_EFER_FULL, guest_efer);
+
+        // Segment selectors
         vmwrite(vmcs::guest::CS_SELECTOR, cs().bits());
         vmwrite(vmcs::guest::SS_SELECTOR, ss().bits());
         vmwrite(vmcs::guest::DS_SELECTOR, ds().bits());
@@ -86,6 +123,7 @@ impl Vmcs {
         // All segment base registers are assumed to be zero, except that of TR.
         vmwrite(vmcs::guest::TR_BASE, guest_descriptor.tss.base);
 
+        // Segment limits
         vmwrite(vmcs::guest::CS_LIMIT, lsl(ss()));
         vmwrite(vmcs::guest::SS_LIMIT, lsl(ss()));
         vmwrite(vmcs::guest::DS_LIMIT, lsl(ds()));
@@ -95,6 +133,7 @@ impl Vmcs {
         vmwrite(vmcs::guest::LDTR_LIMIT, 0u32);
         vmwrite(vmcs::guest::TR_LIMIT, guest_descriptor.tr.bits());
 
+        // Segment access rights
         vmwrite(vmcs::guest::CS_ACCESS_RIGHTS, access_rights_from_native(lar(cs())) as u64);
         vmwrite(vmcs::guest::SS_ACCESS_RIGHTS, access_rights_from_native(lar(ss())) as u64);
         vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, access_rights_from_native(lar(ds())) as u64);
@@ -104,12 +143,14 @@ impl Vmcs {
         vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, access_rights_from_native(0u32));
         vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, access_rights_from_native(guest_descriptor.tss.ar));
 
+        // Descriptor tables
         vmwrite(vmcs::guest::GDTR_BASE, guest_descriptor.gdtr.base as u64);
         vmwrite(vmcs::guest::IDTR_BASE, idtr.base as u64);
 
         vmwrite(vmcs::guest::GDTR_LIMIT, guest_descriptor.gdtr.limit as u64);
         vmwrite(vmcs::guest::IDTR_LIMIT, idtr.limit as u64);
 
+        // No VMCS shadowing in use
         vmwrite(vmcs::guest::LINK_PTR_FULL, u64::MAX);
 
         log::debug!("Guest Registers State setup successfully!");
@@ -165,6 +206,7 @@ impl Vmcs {
 
         const PRIMARY_CTL: u64 =
             (vmcs::control::PrimaryControls::SECONDARY_CONTROLS.bits() | vmcs::control::PrimaryControls::USE_MSR_BITMAPS.bits()) as u64;
+
         const SECONDARY_CTL: u64 = (vmcs::control::SecondaryControls::ENABLE_RDTSCP.bits()
             | vmcs::control::SecondaryControls::ENABLE_XSAVES_XRSTORS.bits()
             | vmcs::control::SecondaryControls::ENABLE_INVPCID.bits()
@@ -172,12 +214,15 @@ impl Vmcs {
             | vmcs::control::SecondaryControls::ENABLE_EPT.bits()
             | vmcs::control::SecondaryControls::CONCEAL_VMX_FROM_PT.bits()
             | vmcs::control::SecondaryControls::UNRESTRICTED_GUEST.bits()) as u64;
+
         const ENTRY_CTL: u64 = (vmcs::control::EntryControls::IA32E_MODE_GUEST.bits()
             | vmcs::control::EntryControls::LOAD_DEBUG_CONTROLS.bits()
             | vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
+
         const EXIT_CTL: u64 = (vmcs::control::ExitControls::HOST_ADDRESS_SPACE_SIZE.bits()
             | vmcs::control::ExitControls::SAVE_DEBUG_CONTROLS.bits()
             | vmcs::control::ExitControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
+
         const PINBASED_CTL: u64 = 0;
 
         vmwrite(vmcs::control::PRIMARY_PROCBASED_EXEC_CONTROLS, adjust_vmx_controls(VmxControl::ProcessorBased, PRIMARY_CTL));

@@ -19,4 +19,5 @@ pub mod vmcs;
 pub mod vmerror;
 pub mod vmexit;
 pub mod vmlaunch;
+pub mod vmlaunch_diagnostics;
 pub mod vmxon;

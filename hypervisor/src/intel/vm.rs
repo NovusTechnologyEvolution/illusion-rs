@@ -17,6 +17,7 @@ use {
             vmcs::Vmcs,
             vmerror::{VmInstructionError, VmxBasicExitReason},
             vmlaunch::launch_vm,
+            vmlaunch_diagnostics::diagnose_guest_state_validity,
             vmxon::Vmxon,
         },
     },
@@ -157,14 +158,6 @@ impl Vm {
     }
 
     /// Activates the VMXON region to enable VMX operation.
-    ///
-    /// Sets up the VMXON region and executes the VMXON instruction. This involves configuring control registers,
-    /// adjusting the IA32_FEATURE_CONTROL MSR, and validating the VMXON region's revision ID to ensure the CPU is ready
-    /// for VMX operation mode.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` on successful activation, or an `Err(HypervisorError)` if any step in the activation process fails.
     pub fn activate_vmxon(&mut self) -> Result<(), HypervisorError> {
         trace!("Setting up VMXON region");
         self.setup_vmxon()?;
@@ -177,15 +170,6 @@ impl Vm {
         Ok(())
     }
 
-    /// Prepares the system for VMX operation by configuring necessary control registers and MSRs.
-    ///
-    /// Ensures that the system meets all prerequisites for VMX operation as defined by Intel's specifications.
-    /// This includes enabling VMX operation through control register modifications, setting the lock bit in
-    /// IA32_FEATURE_CONTROL MSR, and adjusting mandatory CR0 and CR4 bits.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` if all configurations are successfully applied, or an `Err(HypervisorError)` if adjustments fail.
     fn setup_vmxon(&mut self) -> Result<(), HypervisorError> {
         trace!("Enabling Virtual Machine Extensions (VMX)");
         Vmxon::enable_vmx_operation();
@@ -207,48 +191,30 @@ impl Vm {
     }
 
     /// Activates the VMCS region for the VM, preparing it for execution.
-    ///
-    /// Clears and loads the VMCS region, setting it as the current VMCS for VMX operations.
-    /// Calls `setup_vmcs` to configure the VMCS with guest, host, and control settings.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` on successful activation, or an `Err(HypervisorError)` if activation fails.
     pub fn activate_vmcs(&mut self) -> Result<(), HypervisorError> {
         trace!("Activating VMCS");
-        // Clear the VMCS region.
         vmclear(&self.vmcs_region as *const _ as _);
         trace!("VMCLEAR successful!");
 
-        // Load current VMCS pointer.
         vmptrld(&self.vmcs_region as *const _ as _);
         trace!("VMPTRLD successful!");
 
         self.setup_vmcs()?;
-
         trace!("VMCS activated successfully!");
 
         Ok(())
     }
 
     /// Configures the VMCS with necessary settings for guest and host state, and VM execution controls.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` if VMCS setup is successful, or an `Err(HypervisorError)` for setup failures.
     pub fn setup_vmcs(&mut self) -> Result<(), HypervisorError> {
         trace!("Setting up VMCS");
 
         let primary_eptp = self.primary_eptp;
 
-        // Lock the shared hook manager
         let hook_manager = SHARED_HOOK_MANAGER.lock();
-
         let msr_bitmap = &hook_manager.msr_bitmap as *const _ as u64;
 
-        // Lock the descriptor manager
         let descriptor_manager = SHARED_DESCRIPTOR_MANAGER.lock();
-
         let guest_descriptors = &descriptor_manager.guest_descriptor;
         let host_descriptors = &descriptor_manager.host_descriptor;
 
@@ -264,49 +230,52 @@ impl Vm {
     }
 
     /// Executes the VM, running in a loop until a VM-exit occurs.
-    ///
-    /// Launches or resumes the VM based on its current state, handling VM-exits as they occur.
-    /// Updates the VM's state based on VM-exit reasons and captures the guest register state post-exit.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(VmxBasicExitReason)` indicating the reason for the VM-exit, or an `Err(HypervisorError)`
-    /// if the VM fails to launch or an unknown exit reason is encountered.
     pub fn run(&mut self) -> Result<VmxBasicExitReason, HypervisorError> {
-        // Run the VM until the VM-exit occurs.
-        let flags = unsafe { launch_vm(&mut self.guest_registers, u64::from(self.has_launched)) };
-        Self::vm_succeed(RFlags::from_raw(flags))?;
+        // For the first launch, dump guest state *before* VM-entry.
+        if !self.has_launched {
+            error!("=== Pre-VMLAUNCH guest state dump ===");
+            diagnose_guest_state_validity();
+        }
+
+        // Run the VM until the VM-exit occurs (or VM-instruction failure).
+        let flags_raw = unsafe { launch_vm(&mut self.guest_registers, u64::from(self.has_launched)) };
+        trace!("VM-entry: launch_vm returned RFLAGS = 0x{:x}", flags_raw);
+
+        let flags = RFlags::from_raw(flags_raw);
+
+        if let Err(e) = Self::vm_succeed(flags) {
+            error!("VM-entry failed; dumping guest state for diagnostics");
+            diagnose_guest_state_validity();
+
+            let vm_error = unsafe { vmread(vmcs::ro::VM_INSTRUCTION_ERROR) as u32 };
+            error!("VM-instruction error code (raw): 0x{:x}", vm_error);
+
+            return Err(e);
+        }
+
         self.has_launched = true;
         // trace!("VM-exit occurred!");
 
         // VM-exit occurred. Copy the guest register values from VMCS so that
-        // `self.registers` is complete and up to date.
+        // `self.guest_registers` is complete and up to date.
         self.guest_registers.rip = vmread(vmcs::guest::RIP);
         self.guest_registers.rsp = vmread(vmcs::guest::RSP);
         self.guest_registers.rflags = vmread(vmcs::guest::RFLAGS);
 
         let exit_reason = vmread(vmcs::ro::EXIT_REASON) as u32;
+        trace!("VM-exit: raw EXIT_REASON = 0x{:x}", exit_reason);
 
         let Some(basic_exit_reason) = VmxBasicExitReason::from_u32(exit_reason) else {
-            error!("Unknown exit reason: {:#x}", exit_reason);
+            error!("Unknown exit reason: 0x{:x}", exit_reason);
             return Err(HypervisorError::UnknownVMExitReason);
         };
+
+        info!("VM-exit: {:?}", basic_exit_reason);
 
         Ok(basic_exit_reason)
     }
 
     /// Verifies that the `launch_vm` function executed successfully.
-    ///
-    /// This method checks the RFlags for indications of failure from the `launch_vm` function.
-    /// If a failure is detected, it will panic with a detailed error message.
-    ///
-    /// # Arguments
-    ///
-    /// * `flags`: The RFlags value post-execution of the `launch_vm` function.
-    ///
-    /// Reference: Intel® 64 and IA-32 Architectures Software Developer's Manual:
-    /// - 31.2 CONVENTIONS
-    /// - 31.4 VM INSTRUCTION ERROR NUMBERS
     fn vm_succeed(flags: RFlags) -> Result<(), HypervisorError> {
         if flags.contains(RFlags::FLAGS_ZF) {
             let instruction_error = vmread(vmcs::ro::VM_INSTRUCTION_ERROR) as u32;
@@ -316,7 +285,7 @@ impl Vm {
                     Err(HypervisorError::VmInstructionError)
                 }
                 None => {
-                    error!("Unknown VM instruction error: {:#x}", instruction_error);
+                    error!("Unknown VM instruction error: 0x{:x}", instruction_error);
                     Err(HypervisorError::UnknownVMInstructionError)
                 }
             };
