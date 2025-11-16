@@ -23,4 +23,4 @@ spin = "0.10.0"
 com_logger = "0.1.2"
 
 # Hypervisor crate, built with the same log configuration
-hypervisor = { path = "../hypervisor", features = ["vmware", "hide_hv_with_ept"] }
+hypervisor = { path = "../hypervisor", features = ["vmware"] }

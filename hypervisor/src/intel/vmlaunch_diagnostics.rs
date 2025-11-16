@@ -148,8 +148,19 @@ pub fn diagnose_host_state_validity() {
     let host_cr4 = vmread(vmcs::host::CR4);
 
     error!("Host CR0: 0x{:016x}", host_cr0);
+    let pe = (host_cr0 & 0x1) != 0;
+    let pg = (host_cr0 & (1 << 31)) != 0;
+    error!("  PE (Protected Mode): {}", pe);
+    error!("  PG (Paging): {}", pg);
+
     error!("Host CR3: 0x{:016x}", host_cr3);
+
     error!("Host CR4: 0x{:016x}", host_cr4);
+    let vmxe = (host_cr4 & (1 << 13)) != 0;
+    error!("  VMXE: {} (should be 1 in host)", vmxe);
+    if !vmxe {
+        error!("  ERROR: host CR4 missing VMXE bit!");
+    }
 
     let host_rip = vmread(vmcs::host::RIP);
     let host_rsp = vmread(vmcs::host::RSP);
@@ -158,6 +169,13 @@ pub fn diagnose_host_state_validity() {
     error!("Host RSP: 0x{:016x}", host_rsp);
     error!("  RIP canonical: {}", is_canonical(host_rip));
     error!("  RSP canonical: {}", is_canonical(host_rsp));
+
+    if host_rip == 0 {
+        error!("  ERROR: Host RIP is zero!");
+    }
+    if host_rsp == 0 {
+        error!("  ERROR: Host RSP is zero!");
+    }
 
     let host_cs = vmread(vmcs::host::CS_SELECTOR) as u16;
     let host_ss = vmread(vmcs::host::SS_SELECTOR) as u16;
@@ -168,17 +186,76 @@ pub fn diagnose_host_state_validity() {
     let host_tr = vmread(vmcs::host::TR_SELECTOR) as u16;
 
     error!("Host segments:");
-    error!("  CS: 0x{:04x}", host_cs);
-    error!("  SS: 0x{:04x}", host_ss);
-    error!("  DS: 0x{:04x}", host_ds);
-    error!("  ES: 0x{:04x}", host_es);
-    error!("  FS: 0x{:04x}", host_fs);
-    error!("  GS: 0x{:04x}", host_gs);
-    error!("  TR: 0x{:04x}", host_tr);
+    error!("  CS: 0x{:04x} (RPL: {})", host_cs, host_cs & 0x3);
+    error!("  SS: 0x{:04x} (RPL: {})", host_ss, host_ss & 0x3);
+    error!("  DS: 0x{:04x} (RPL: {})", host_ds, host_ds & 0x3);
+    error!("  ES: 0x{:04x} (RPL: {})", host_es, host_es & 0x3);
+    error!("  FS: 0x{:04x} (RPL: {})", host_fs, host_fs & 0x3);
+    error!("  GS: 0x{:04x} (RPL: {})", host_gs, host_gs & 0x3);
+    error!("  TR: 0x{:04x} (RPL: {})", host_tr, host_tr & 0x3);
 
+    // All segment selectors must have RPL=0 for host
+    if (host_cs & 0x3) != 0 {
+        error!("  ERROR: Host CS has non-zero RPL!");
+    }
+    if (host_ss & 0x3) != 0 {
+        error!("  ERROR: Host SS has non-zero RPL!");
+    }
+    if (host_ds & 0x3) != 0 {
+        error!("  ERROR: Host DS has non-zero RPL!");
+    }
+    if (host_es & 0x3) != 0 {
+        error!("  ERROR: Host ES has non-zero RPL!");
+    }
+    if (host_tr & 0x3) != 0 {
+        error!("  ERROR: Host TR has non-zero RPL!");
+    }
+
+    let host_fs_base = vmread(vmcs::host::FS_BASE);
+    let host_gs_base = vmread(vmcs::host::GS_BASE);
+    let host_tr_base = vmread(vmcs::host::TR_BASE);
     let host_gdtr_base = vmread(vmcs::host::GDTR_BASE);
     let host_idtr_base = vmread(vmcs::host::IDTR_BASE);
 
+    error!("Host FS Base: 0x{:016x}", host_fs_base);
+    error!("Host GS Base: 0x{:016x}", host_gs_base);
+    error!("Host TR Base: 0x{:016x}", host_tr_base);
     error!("Host GDTR base: 0x{:016x}", host_gdtr_base);
     error!("Host IDTR base: 0x{:016x}", host_idtr_base);
+
+    if host_tr_base == 0 {
+        error!("  ERROR: Host TR base is zero!");
+    }
+    if host_gdtr_base == 0 {
+        error!("  ERROR: Host GDTR base is zero!");
+    }
+    if host_idtr_base == 0 {
+        error!("  ERROR: Host IDTR base is zero!");
+    }
+
+    // Check SYSENTER MSRs
+    let host_sysenter_cs = vmread(vmcs::host::IA32_SYSENTER_CS);
+    let host_sysenter_esp = vmread(vmcs::host::IA32_SYSENTER_ESP);
+    let host_sysenter_eip = vmread(vmcs::host::IA32_SYSENTER_EIP);
+
+    error!("Host IA32_SYSENTER_CS: 0x{:016x}", host_sysenter_cs);
+    error!("Host IA32_SYSENTER_ESP: 0x{:016x}", host_sysenter_esp);
+    error!("Host IA32_SYSENTER_EIP: 0x{:016x}", host_sysenter_eip);
+
+    // Check IA32_EFER
+    let host_efer = vmread(vmcs::host::IA32_EFER_FULL);
+    error!("Host IA32_EFER: 0x{:016x}", host_efer);
+    let efer_lme = (host_efer & (1 << 8)) != 0;
+    let efer_lma = (host_efer & (1 << 10)) != 0;
+    error!("  LME (Long Mode Enable): {}", efer_lme);
+    error!("  LMA (Long Mode Active): {}", efer_lma);
+
+    // Check exit controls to see if we're in IA-32e mode
+    let exit_controls = vmread(vmcs::control::VMEXIT_CONTROLS);
+    let host_address_space_size = (exit_controls & (1 << 9)) != 0;
+    error!("Host Address Space Size (64-bit mode): {}", host_address_space_size);
+
+    if host_address_space_size && (!efer_lme || !efer_lma) {
+        error!("  ERROR: Host is 64-bit but EFER.LME/LMA not set!");
+    }
 }

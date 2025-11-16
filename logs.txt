@@ -1,13 +1,16 @@
 vcpu-0 INFO: The Matrix is an illusion
 vcpu-0 DEBUG: Setting up the hypervisor
-vcpu-0 DEBUG: Loaded image base: 0x96f9000..0xd73b000
+vcpu-0 DEBUG: Loaded image base: 0x96f4000..0xd73b000
 vcpu-0 DEBUG: Starting hypervisor on all processors
 vcpu-0 INFO: start_hypervisor_on_all_processors: ENTRY
 vcpu-0 INFO: Total processors: 8, enabled: 8
 vcpu-0 DEBUG: start_hypervisor_on_this_cpu: ENTRY
 vcpu-0 DEBUG: capture_registers → already = false
 vcpu-0 DEBUG: virtualizing CPU …
-vcpu-0 DEBUG: virtualize_system(): landing=0x96fad20, host_stack_top=0xfbc5020
+vcpu-0 DEBUG: resume_from_virtualization virtual: 0x96f5000
+vcpu-0 DEBUG: resume_from_virtualization physical: 0x96f5000
+vcpu-0 DEBUG: Guest will resume at RIP (physical): 0x96f5000
+vcpu-0 DEBUG: virtualize_system(): landing=0x971eca0, host_stack_top=0xfbc5020
 vcpu-0 DEBUG: landing(): calling start_hypervisor
 vcpu-0 DEBUG: Starting hypervisor
 vcpu-0 INFO: CPU is Intel
@@ -26,50 +29,48 @@ vcpu-0 DEBUG: New GDT with TSS created for guest successfully!
 vcpu-0 DEBUG: Creating a new GDT with TSS for host
 vcpu-0 DEBUG: New GDT with TSS and IDT created for host successfully!
 vcpu-0 DEBUG: Setting up Guest Registers State
-vcpu-0 DEBUG: Guest CR0: 0x0000000080010033, sanitized Guest CR4: 0x0000000000000668
+vcpu-0 DEBUG: Guest CR0 (32-bit mode): 0x0000000000000033, Guest CR3: 0x0000000000000000, Guest CR4: 0x0000000000000648
+vcpu-0 DEBUG: Guest RSP: 0x000000000ffca528, Guest RIP: 0x00000000096f5000
+vcpu-0 DEBUG: Guest EFER (32-bit mode): 0x0000000000000000
 vcpu-0 DEBUG: Guest Registers State setup successfully!
 vcpu-0 DEBUG: Setting up Host Registers State
 vcpu-0 DEBUG: Host Registers State setup successfully!
 vcpu-0 DEBUG: Setting up VMCS Control Fields
 vcpu-0 DEBUG: VMCS Control Fields setup successfully!
 vcpu-0 DEBUG: VMCS activated
-vcpu-0 DEBUG: Hiding hypervisor memory... (NOTE: EPT HOOKS WON'T WORK IF THIS IS ENABLED UNLESS SHADOW PAGES ARE EXCLUDED)
-vcpu-0 DEBUG: Memory Range: start=0x96f9000, size=0x4042000
-vcpu-0 DEBUG: Memory Range: start=0xfbc1020, size=0x4000
-vcpu-0 DEBUG: Hypervisor memory hidden
 vcpu-0 INFO: Launching the VM until a vmexit occurs...
-vcpu-0 ERROR: === Pre-VMLAUNCH guest state dump ===
+vcpu-0 ERROR: === Pre-VMLAUNCH diagnostics ===
 vcpu-0 ERROR: === GUEST STATE VALIDITY CHECK ===
-vcpu-0 ERROR: Guest CR0: 0x0000000080010033
+vcpu-0 ERROR: Guest CR0: 0x0000000000000033
 vcpu-0 ERROR:   PE (Protected Mode): true
-vcpu-0 ERROR:   PG (Paging): true
-vcpu-0 ERROR: Guest CR3: 0x000000000fc01000
-vcpu-0 ERROR: Guest CR4: 0x0000000000000668
-vcpu-0 ERROR:   PAE: true
+vcpu-0 ERROR:   PG (Paging): false
+vcpu-0 ERROR: Guest CR3: 0x0000000000000000
+vcpu-0 ERROR: Guest CR4: 0x0000000000000648
+vcpu-0 ERROR:   PAE: false
 vcpu-0 ERROR:   VMXE: false (should be 0 in guest)
 vcpu-0 ERROR: Guest RFLAGS: 0x0000000000000246
 vcpu-0 ERROR:   RF (Resume Flag): false
 vcpu-0 ERROR:   VM (Virtual-8086): false
-vcpu-0 ERROR: Guest RIP: 0x00000000096fafbc
-vcpu-0 ERROR:   IA-32e mode: true
+vcpu-0 ERROR: Guest RIP: 0x00000000096f5000
+vcpu-0 ERROR:   IA-32e mode: false
 vcpu-0 ERROR:   RIP is canonical: true
-vcpu-0 ERROR: Guest IA32_EFER: 0x0000000000000500
-vcpu-0 ERROR:   LME (Long Mode Enable): true
-vcpu-0 ERROR:   LMA (Long Mode Active): true
+vcpu-0 ERROR: Guest IA32_EFER: 0x0000000000000000
+vcpu-0 ERROR:   LME (Long Mode Enable): false
+vcpu-0 ERROR:   LMA (Long Mode Active): false
 vcpu-0 ERROR: Guest CS:
-vcpu-0 ERROR:   Selector: 0x0018
+vcpu-0 ERROR:   Selector: 0x0008
 vcpu-0 ERROR:   Base: 0x0000000000000000
 vcpu-0 ERROR:   Limit: 0xffffffff
-vcpu-0 ERROR:   Access Rights: 0x0000a09b
+vcpu-0 ERROR:   Access Rights: 0x0000c09b
 vcpu-0 ERROR:     Present: true
 vcpu-0 ERROR:     DPL: 0
 vcpu-0 ERROR:     Type: 0xb
 vcpu-0 ERROR: Guest SS:
-vcpu-0 ERROR:   Selector: 0x0008
+vcpu-0 ERROR:   Selector: 0x0010
 vcpu-0 ERROR:   Access Rights: 0x0000c093
 vcpu-0 ERROR:     Present: true
 vcpu-0 ERROR: Guest GDTR:
-vcpu-0 ERROR:   Base: 0x000000000972e8b8
+vcpu-0 ERROR:   Base: 0x00000000097388a0
 vcpu-0 ERROR:   Limit: 0x003f
 vcpu-0 ERROR: Guest IDTR:
 vcpu-0 ERROR:   Base: 0x000000000fb53460
@@ -77,3 +78,44 @@ vcpu-0 ERROR:   Limit: 0x0fff
 vcpu-0 ERROR: Primary controls:  0x94006172
 vcpu-0 ERROR: Secondary controls: 0x001010aa
 vcpu-0 ERROR: Unrestricted Guest: true
+vcpu-0 ERROR: === HOST STATE CHECK ===
+vcpu-0 ERROR: Host CR0: 0x0000000080010033
+vcpu-0 ERROR:   PE (Protected Mode): true
+vcpu-0 ERROR:   PG (Paging): true
+vcpu-0 ERROR: Host CR3: 0x0000000009739000
+vcpu-0 ERROR: Host CR4: 0x0000000000002668
+vcpu-0 ERROR:   VMXE: true (should be 1 in host)
+vcpu-0 ERROR: Host RIP: 0x00000000096f505a
+vcpu-0 ERROR: Host RSP: 0x000000000fbc4b48
+vcpu-0 ERROR:   RIP canonical: true
+vcpu-0 ERROR:   RSP canonical: true
+vcpu-0 ERROR: Host segments:
+vcpu-0 ERROR:   CS: 0x0008 (RPL: 0)
+vcpu-0 ERROR:   SS: 0x0008 (RPL: 0)
+vcpu-0 ERROR:   DS: 0x0008 (RPL: 0)
+vcpu-0 ERROR:   ES: 0x0008 (RPL: 0)
+vcpu-0 ERROR:   FS: 0x0000 (RPL: 0)
+vcpu-0 ERROR:   GS: 0x0000 (RPL: 0)
+vcpu-0 ERROR:   TR: 0x0010 (RPL: 0)
+vcpu-0 ERROR: Host FS Base: 0x0000000000000000
+vcpu-0 ERROR: Host GS Base: 0x0000000000000000
+vcpu-0 ERROR: Host TR Base: 0x000000000fbb9f80
+vcpu-0 ERROR: Host GDTR base: 0x0000000009738838
+vcpu-0 ERROR: Host IDTR base: 0x000000000fb53460
+vcpu-0 ERROR: Host IA32_SYSENTER_CS: 0x0000000000000000
+vcpu-0 ERROR: Host IA32_SYSENTER_ESP: 0x0000000000000000
+vcpu-0 ERROR: Host IA32_SYSENTER_EIP: 0x0000000000000000
+vcpu-0 ERROR: Host IA32_EFER: 0x0000000000000500
+vcpu-0 ERROR:   LME (Long Mode Enable): true
+vcpu-0 ERROR:   LMA (Long Mode Active): true
+vcpu-0 ERROR: Host Address Space Size (64-bit mode): true
+vcpu-0 ERROR: === EPT TRANSLATION CHECK ===
+vcpu-0 ERROR: Verifying EPT translation for guest RIP: 0x96f5000
+vcpu-0 ERROR: EPT PML4 base: 0x993d000
+vcpu-0 ERROR:   SUCCESS: EPT translates guest PA 0x96f5000 -> host PA 0x96f5000
+vcpu-0 ERROR:   First 16 bytes at host PA: [f4, f4, eb, fd, 48, 89, 01, 48, 89, 49, 08, 48, 89, 51, 10, 48]
+vcpu-0 ERROR:   Expected HLT instruction (0xF4) at start
+vcpu-0 ERROR: === ABOUT TO CALL launch_vm ===
+vcpu-0 ERROR: launch_vm function address: 0x96f505b
+vcpu-0 ERROR: guest_registers address: 0x9b40000
+vcpu-0 ERROR: has_launched value: false

@@ -36,7 +36,7 @@ use {
         },
         windows::eprocess::ProcessInformation,
     },
-    alloc::boxed::Box,
+    alloc::{boxed::Box, vec::Vec},
     log::*,
     x86::{
         msr::IA32_VMX_EPT_VPID_CAP,
@@ -94,11 +94,44 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
 
     #[cfg(feature = "hide_hv_with_ept")]
     {
-        debug!("Hiding hypervisor memory... (NOTE: EPT HOOKS WON'T WORK IF THIS IS ENABLED UNLESS SHADOW PAGES ARE EXCLUDED)");
+        debug!("Hiding hypervisor memory with selective exclusions...");
+        debug!("NOTE: Critical VM-exit handlers will NOT be hidden to prevent triple fault");
+
         let mut hook_manager = crate::intel::hooks::hook_manager::SHARED_HOOK_MANAGER.lock();
         hook_manager.print_allocated_memory();
-        match hook_manager.hide_hypervisor_memory(&mut vm, crate::intel::ept::AccessType::READ_WRITE_EXECUTE) {
-            Ok(_) => debug!("Hypervisor memory hidden"),
+
+        // Get addresses of critical functions that must remain accessible during VM-exits
+        let mut exclude_pages = Vec::new();
+
+        // CRITICAL: The vmexit_handler must be executable when VM-exits occur
+        unsafe extern "C" {
+            fn vmexit_handler();
+        }
+        let vmexit_handler_addr = vmexit_handler as u64;
+        let vmexit_handler_page = vmexit_handler_addr & !0xFFF; // Align to 4KB
+        exclude_pages.push(vmexit_handler_page);
+        debug!("  Excluding vmexit_handler page: {:#x} (function at {:#x})", vmexit_handler_page, vmexit_handler_addr);
+
+        // Also exclude the launch_vm assembly function's page
+        // This is less critical but good practice
+        unsafe extern "efiapi" {
+            fn launch_vm(registers: *mut crate::intel::capture::GuestRegisters, launched: u64) -> u64;
+        }
+        let launch_vm_addr = launch_vm as u64;
+        let launch_vm_page = launch_vm_addr & !0xFFF;
+        if !exclude_pages.contains(&launch_vm_page) {
+            exclude_pages.push(launch_vm_page);
+            debug!("  Excluding launch_vm page: {:#x} (function at {:#x})", launch_vm_page, launch_vm_addr);
+        }
+
+        // Exclude any other critical pages
+        // You might want to exclude the entire .text section of your hypervisor
+        // or at least the VM-exit handling code paths
+
+        debug!("Total excluded pages: {}", exclude_pages.len());
+
+        match hook_manager.hide_hypervisor_memory_except(&mut vm, &exclude_pages, crate::intel::ept::AccessType::READ_WRITE_EXECUTE) {
+            Ok(_) => debug!("Hypervisor memory hidden (with {} critical pages excluded)", exclude_pages.len()),
             Err(e) => panic!("Failed to hide hypervisor memory: {:?}", e),
         };
     }

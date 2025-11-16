@@ -8,6 +8,7 @@
 use {
     crate::intel::support::{sgdt, sidt},
     alloc::vec::Vec,
+    core::mem::size_of_val,
     x86::{
         dtables::DescriptorTablePointer,
         segmentation::{
@@ -118,7 +119,7 @@ impl Descriptors {
         descriptors.cs = SegmentSelector::new(1, x86::Ring::Ring0);
         descriptors.tr = SegmentSelector::new(2, x86::Ring::Ring0);
 
-        // Initialize the IDT with empty descriptors for the host
+        // Initialize the IDT with current IDT entries for the host
         descriptors.idt = Self::copy_current_idt();
         descriptors.idtr = DescriptorTablePointer::new_from_slice(&descriptors.idt);
 
@@ -128,17 +129,6 @@ impl Descriptors {
     }
 
     /// Builds a descriptor for the Task State Segment (TSS).
-    ///
-    /// Configures a TSS descriptor based on the provided TSS's base and limit,
-    /// setting it as present and with a privilege level of ring 0.
-    ///
-    /// # Arguments
-    ///
-    /// - `tss`: A reference to the `TaskStateSegment` for which to create the descriptor.
-    ///
-    /// # Returns
-    ///
-    /// A `Descriptor` instance representing the TSS in the GDT.
     fn task_segment_descriptor(tss: &TaskStateSegment) -> Descriptor {
         <DescriptorBuilder as GateDescriptorBuilder<u32>>::tss_descriptor(tss.base, tss.limit, true)
             .present()
@@ -147,13 +137,6 @@ impl Descriptors {
     }
 
     /// Constructs a code segment descriptor for use in the GDT.
-    ///
-    /// Creates a descriptor representing a code segment with standard access rights,
-    /// suitable for execution in a protected or long mode environment.
-    ///
-    /// # Returns
-    ///
-    /// A `Descriptor` instance configured as a code segment.
     fn code_segment_descriptor() -> Descriptor {
         DescriptorBuilder::code_descriptor(0, u32::MAX, CodeSegmentType::ExecuteAccessed)
             .present()
@@ -163,17 +146,13 @@ impl Descriptors {
             .finish()
     }
 
-    /// Copies the current IDT for the guest.
+    /// Copies the current IDT for the guest/host.
     fn copy_current_idt() -> Vec<u64> {
         log::trace!("Copying current IDT");
 
-        // Get the current IDTR
         let current_idtr = sidt();
-
-        // Create a slice from the current IDT entries.
         let current_idt = unsafe { core::slice::from_raw_parts(current_idtr.base.cast::<u64>(), usize::from(current_idtr.limit + 1) / 8) };
 
-        // Create a new IDT from the slice.
         let new_idt = current_idt.to_vec();
 
         log::trace!("Copied current IDT");
@@ -183,9 +162,6 @@ impl Descriptors {
 }
 
 /// Represents the Task State Segment (TSS).
-///
-/// Encapsulates the TSS, which is critical for task-switching and storing state information
-/// in protected mode operations. Includes fields for the base address, limit, and access rights.
 #[derive(derivative::Derivative)]
 #[derivative(Debug)]
 pub struct TaskStateSegment {
@@ -204,13 +180,6 @@ pub struct TaskStateSegment {
     segment: TaskStateSegmentRaw,
 }
 
-/// Initializes a default TSS.
-///
-/// Allocates and sets up a default TSS with predefined access rights and size,
-/// ready for use in VMX operations.
-///
-/// # Returns
-/// A default `TaskStateSegment` instance.
 impl Default for TaskStateSegment {
     fn default() -> Self {
         let segment = TaskStateSegmentRaw([0; 104]);
@@ -225,7 +194,5 @@ impl Default for TaskStateSegment {
 }
 
 /// Low-level representation of the 64-bit Task State Segment (TSS).
-///
-/// Encapsulates the raw structure of the TSS as defined in the x86_64 architecture.
 #[allow(dead_code)]
 struct TaskStateSegmentRaw([u8; 104]);

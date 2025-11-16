@@ -1,0 +1,1577 @@
+diff --git a/hypervisor/Cargo.toml b/hypervisor/Cargo.toml
+index 8513f75..6c81fb8 100644
+--- a/hypervisor/Cargo.toml
++++ b/hypervisor/Cargo.toml
+@@ -5,7 +5,6 @@ edition = "2024"
+ 
+ [features]
+ vmware = []
+-hide_hv_with_ept = []
+ 
+ [lib]
+ name = "hypervisor"
+diff --git a/hypervisor/src/intel/bitmap.rs b/hypervisor/src/intel/bitmap.rs
+index eebdfb8..0564ca5 100644
+--- a/hypervisor/src/intel/bitmap.rs
++++ b/hypervisor/src/intel/bitmap.rs
+@@ -22,7 +22,7 @@ pub enum MsrOperation {
+ 
+ /// Represents the MSR Bitmap structure used in VMX.
+ ///
+-/// In processors that support the 1-setting of the “use MSR bitmaps” VM-execution control,
++/// In processors that support the 1-setting of the "use MSR bitmaps" VM-execution control,
+ /// the VM-execution control fields include the 64-bit physical address of four contiguous
+ /// MSR bitmaps, which are each 1-KByte in size.
+ ///
+@@ -68,7 +68,7 @@ impl MsrBitmap {
+     pub fn modify_msr_interception(&mut self, msr: u32, access: MsrAccessType, operation: MsrOperation) {
+         let msr_low = msr & 0x1FFF;
+         let msr_index = (msr_low >> 3) as usize;
+-        let msr_bit = (msr_low & 7) as u8;
++        let msr_bit = (msr_low & 7) as usize;
+ 
+         let bitmap_section = match (msr >= 0xC000_0000, access) {
+             (true, MsrAccessType::Write) => &mut self.write_high_msrs,
+@@ -78,8 +78,8 @@ impl MsrBitmap {
+         };
+ 
+         match operation {
+-            MsrOperation::Hook => bitmap_section[msr_index].set_bit(msr_bit as usize, true),
+-            MsrOperation::Unhook => bitmap_section[msr_index].set_bit(msr_bit as usize, false),
++            MsrOperation::Hook => bitmap_section[msr_index].set_bit(msr_bit, true),
++            MsrOperation::Unhook => bitmap_section[msr_index].set_bit(msr_bit, false),
+         }
+     }
+ }
+diff --git a/hypervisor/src/intel/descriptor.rs b/hypervisor/src/intel/descriptor.rs
+index fa46019..30a6561 100644
+--- a/hypervisor/src/intel/descriptor.rs
++++ b/hypervisor/src/intel/descriptor.rs
+@@ -8,6 +8,7 @@
+ use {
+     crate::intel::support::{sgdt, sidt},
+     alloc::vec::Vec,
++    core::mem::size_of_val,
+     x86::{
+         dtables::DescriptorTablePointer,
+         segmentation::{
+@@ -118,7 +119,7 @@ impl Descriptors {
+         descriptors.cs = SegmentSelector::new(1, x86::Ring::Ring0);
+         descriptors.tr = SegmentSelector::new(2, x86::Ring::Ring0);
+ 
+-        // Initialize the IDT with empty descriptors for the host
++        // Initialize the IDT with current IDT entries for the host
+         descriptors.idt = Self::copy_current_idt();
+         descriptors.idtr = DescriptorTablePointer::new_from_slice(&descriptors.idt);
+ 
+@@ -128,17 +129,6 @@ impl Descriptors {
+     }
+ 
+     /// Builds a descriptor for the Task State Segment (TSS).
+-    ///
+-    /// Configures a TSS descriptor based on the provided TSS's base and limit,
+-    /// setting it as present and with a privilege level of ring 0.
+-    ///
+-    /// # Arguments
+-    ///
+-    /// - `tss`: A reference to the `TaskStateSegment` for which to create the descriptor.
+-    ///
+-    /// # Returns
+-    ///
+-    /// A `Descriptor` instance representing the TSS in the GDT.
+     fn task_segment_descriptor(tss: &TaskStateSegment) -> Descriptor {
+         <DescriptorBuilder as GateDescriptorBuilder<u32>>::tss_descriptor(tss.base, tss.limit, true)
+             .present()
+@@ -147,13 +137,6 @@ impl Descriptors {
+     }
+ 
+     /// Constructs a code segment descriptor for use in the GDT.
+-    ///
+-    /// Creates a descriptor representing a code segment with standard access rights,
+-    /// suitable for execution in a protected or long mode environment.
+-    ///
+-    /// # Returns
+-    ///
+-    /// A `Descriptor` instance configured as a code segment.
+     fn code_segment_descriptor() -> Descriptor {
+         DescriptorBuilder::code_descriptor(0, u32::MAX, CodeSegmentType::ExecuteAccessed)
+             .present()
+@@ -163,17 +146,13 @@ impl Descriptors {
+             .finish()
+     }
+ 
+-    /// Copies the current IDT for the guest.
++    /// Copies the current IDT for the guest/host.
+     fn copy_current_idt() -> Vec<u64> {
+         log::trace!("Copying current IDT");
+ 
+-        // Get the current IDTR
+         let current_idtr = sidt();
+-
+-        // Create a slice from the current IDT entries.
+         let current_idt = unsafe { core::slice::from_raw_parts(current_idtr.base.cast::<u64>(), usize::from(current_idtr.limit + 1) / 8) };
+ 
+-        // Create a new IDT from the slice.
+         let new_idt = current_idt.to_vec();
+ 
+         log::trace!("Copied current IDT");
+@@ -183,9 +162,6 @@ impl Descriptors {
+ }
+ 
+ /// Represents the Task State Segment (TSS).
+-///
+-/// Encapsulates the TSS, which is critical for task-switching and storing state information
+-/// in protected mode operations. Includes fields for the base address, limit, and access rights.
+ #[derive(derivative::Derivative)]
+ #[derivative(Debug)]
+ pub struct TaskStateSegment {
+@@ -204,13 +180,6 @@ pub struct TaskStateSegment {
+     segment: TaskStateSegmentRaw,
+ }
+ 
+-/// Initializes a default TSS.
+-///
+-/// Allocates and sets up a default TSS with predefined access rights and size,
+-/// ready for use in VMX operations.
+-///
+-/// # Returns
+-/// A default `TaskStateSegment` instance.
+ impl Default for TaskStateSegment {
+     fn default() -> Self {
+         let segment = TaskStateSegmentRaw([0; 104]);
+@@ -225,7 +194,5 @@ impl Default for TaskStateSegment {
+ }
+ 
+ /// Low-level representation of the 64-bit Task State Segment (TSS).
+-///
+-/// Encapsulates the raw structure of the TSS as defined in the x86_64 architecture.
+ #[allow(dead_code)]
+ struct TaskStateSegmentRaw([u8; 104]);
+diff --git a/hypervisor/src/intel/hooks/hook_manager.rs b/hypervisor/src/intel/hooks/hook_manager.rs
+index 7a41060..9a92dd3 100644
+--- a/hypervisor/src/intel/hooks/hook_manager.rs
++++ b/hypervisor/src/intel/hooks/hook_manager.rs
+@@ -29,12 +29,12 @@ use {
+     },
+ };
+ 
+-/// What kind of EPT hook we’re doing.
++/// What kind of EPT hook we're doing.
+ #[derive(Debug, Clone, Copy)]
+ pub enum EptHookType {
+-    /// We’re hooking a function on the shadow page and placing an inline detour there.
++    /// We're hooking a function on the shadow page and placing an inline detour there.
+     Function(InlineHookType),
+-    /// We’re just hiding / protecting a page (your repo leaves this unimplemented).
++    /// We're just hiding / protecting a page (your repo leaves this unimplemented).
+     Page,
+ }
+ 
+@@ -140,8 +140,9 @@ impl HookManager {
+     }
+ 
+     /// Hide hypervisor memory by swapping pages with a dummy page (2MB→4KB split first).
++    /// This version hides ALL hypervisor memory without exceptions.
+     pub fn hide_hypervisor_memory(&mut self, vm: &mut Vm, page_permissions: AccessType) -> Result<(), HypervisorError> {
+-        // we can’t mutate self while iterating &self, so collect first
++        // we can't mutate self while iterating &self, so collect first
+         let pages: Vec<u64> = self.allocated_memory_ranges.iter().map(|(start, _)| *start as u64).collect();
+ 
+         for guest_page_pa in pages {
+@@ -150,6 +151,59 @@ impl HookManager {
+         Ok(())
+     }
+ 
++    /// Hide hypervisor memory EXCEPT for specific page-aligned addresses.
++    /// This is critical to avoid hiding code that will execute during VM-exits (like vmexit_handler).
++    ///
++    /// # Arguments
++    /// * `vm` - The VM instance
++    /// * `exclude_pages` - Slice of page-aligned physical addresses to NOT hide
++    /// * `page_permissions` - EPT permissions for hidden pages
++    pub fn hide_hypervisor_memory_except(&mut self, vm: &mut Vm, exclude_pages: &[u64], page_permissions: AccessType) -> Result<(), HypervisorError> {
++        debug!("Hiding hypervisor memory with {} excluded pages", exclude_pages.len());
++
++        // Collect all pages we want to process
++        let mut pages_to_hide = Vec::new();
++
++        for (start, size) in &self.allocated_memory_ranges {
++            let start_addr = *start as u64;
++            let end_addr = start_addr + *size as u64;
++
++            // Process each 4KB page in this range
++            let mut current_page = start_addr & !0xFFF; // Align to 4KB
++            while current_page < end_addr {
++                // Check if this page should be excluded
++                let should_exclude = exclude_pages.iter().any(|&excluded| {
++                    let excluded_aligned = excluded & !0xFFF;
++                    current_page == excluded_aligned
++                });
++
++                if should_exclude {
++                    debug!("  Skipping page {:#x} (in exclusion list)", current_page);
++                } else {
++                    pages_to_hide.push(current_page);
++                }
++
++                current_page += 0x1000; // Move to next 4KB page
++            }
++        }
++
++        let num_pages = pages_to_hide.len();
++        debug!("Hiding {} pages (excluded {} pages)", num_pages, exclude_pages.len());
++
++        // Now hide all non-excluded pages WITHOUT invalidating after each one
++        // We'll do a single invalidation at the end for performance
++        for guest_page_pa in pages_to_hide {
++            self.ept_hide_hypervisor_memory_no_invalidate(vm, guest_page_pa, page_permissions)?;
++        }
++
++        // Single invalidation at the end for all changes
++        debug!("Invalidating EPT and VPID caches once for all {} pages", num_pages);
++        invept_all_contexts();
++        invvpid_all_contexts();
++
++        Ok(())
++    }
++
+     fn ept_hide_hypervisor_memory(&mut self, vm: &mut Vm, guest_page_pa: u64, page_permissions: AccessType) -> Result<(), HypervisorError> {
+         let guest_page_pa = PAddr::from(guest_page_pa).align_down_to_base_page();
+         let guest_large_page_pa = guest_page_pa.align_down_to_large_page();
+@@ -175,6 +229,37 @@ impl HookManager {
+         Ok(())
+     }
+ 
++    /// Hide a single hypervisor page WITHOUT invalidating caches.
++    /// Use this when hiding multiple pages, then call invalidation once at the end.
++    fn ept_hide_hypervisor_memory_no_invalidate(
++        &mut self,
++        vm: &mut Vm,
++        guest_page_pa: u64,
++        page_permissions: AccessType,
++    ) -> Result<(), HypervisorError> {
++        let guest_page_pa = PAddr::from(guest_page_pa).align_down_to_base_page();
++        let guest_large_page_pa = guest_page_pa.align_down_to_large_page();
++        let dummy_page_pa = self.dummy_page_pa;
++
++        self.memory_manager.map_large_page_to_pt(guest_large_page_pa.as_u64())?;
++
++        let pre_alloc_pt = self
++            .memory_manager
++            .get_page_table_as_mut(guest_large_page_pa.as_u64())
++            .ok_or(HypervisorError::PageTableNotFound)?;
++
++        if vm.primary_ept.is_large_page(guest_page_pa.as_u64()) {
++            vm.primary_ept.split_2mb_to_4kb(guest_large_page_pa.as_u64(), pre_alloc_pt)?;
++        }
++
++        vm.primary_ept
++            .swap_page(guest_page_pa.as_u64(), dummy_page_pa, page_permissions, pre_alloc_pt)?;
++
++        // NO invalidation here - caller will do it once for all pages
++
++        Ok(())
++    }
++
+     /// The real EPT function hook install path.
+     pub fn ept_hook_function(
+         &mut self,
+diff --git a/hypervisor/src/intel/mod.rs b/hypervisor/src/intel/mod.rs
+index 605ca8a..819e938 100644
+--- a/hypervisor/src/intel/mod.rs
++++ b/hypervisor/src/intel/mod.rs
+@@ -18,6 +18,7 @@ pub mod vm;
+ pub mod vmcs;
+ pub mod vmerror;
+ pub mod vmexit;
++pub mod vmexit_handler;
+ pub mod vmlaunch;
+ pub mod vmlaunch_diagnostics;
+ pub mod vmxon;
+diff --git a/hypervisor/src/intel/vm.rs b/hypervisor/src/intel/vm.rs
+index 7894471..388a8dd 100644
+--- a/hypervisor/src/intel/vm.rs
++++ b/hypervisor/src/intel/vm.rs
+@@ -1,9 +1,4 @@
+-//! Manages the VMCS region for VMX operations within a virtualized environment.
+-//!
+-//! Offers functionality to configure and activate the VMCS (Virtual Machine Control Structure),
+-//! which is essential for executing and managing VMX operations on Intel CPUs. This includes
+-//! setting up guest and host states, managing memory with EPT (Extended Page Tables), and
+-//! handling VM-exit reasons for debugging and control purposes.
++//! High-level VM execution helpers for Intel VMX.
+ 
+ use {
+     crate::{
+@@ -13,106 +8,117 @@ use {
+             ept::Ept,
+             hooks::{descriptor_manager::SHARED_DESCRIPTOR_MANAGER, hook_manager::SHARED_HOOK_MANAGER},
+             paging::PageTables,
+-            support::{vmclear, vmptrld, vmread, vmxon},
++            support::{vmclear, vmptrld, vmread, vmwrite, vmxon},
+             vmcs::Vmcs,
+             vmerror::{VmInstructionError, VmxBasicExitReason},
+             vmlaunch::launch_vm,
+-            vmlaunch_diagnostics::diagnose_guest_state_validity,
++            vmlaunch_diagnostics::{diagnose_guest_state_validity, diagnose_host_state_validity},
+             vmxon::Vmxon,
+         },
+     },
+-    core::mem::MaybeUninit,
+-    log::*,
++    log::{error, info, trace},
+     x86::{
+-        bits64::rflags::RFlags,
+-        cpuid::{CpuId, FeatureInfo, cpuid},
++        cpuid::{CpuId, cpuid},
++        current::rflags::RFlags,
+         vmx::vmcs,
+     },
+ };
+ 
+-/// Represents a Virtual Machine (VM) instance, encapsulating its state and control mechanisms.
++/// Minimal wrapper for CPU feature flags used by the hypervisor.
+ ///
+-/// This structure manages the VM's lifecycle, including setup, execution, and handling of VM-exits.
+-/// It holds the VMCS region, and paging information
+-/// and the state of guest registers. Additionally, it tracks whether the VM has been launched.
+-///
+-/// # Size
+-/// - Total size in bytes: 4,204,969 bytes (0x4010B9)
+-/// - Total size in pages: 1027 pages (0x403)
++/// Other modules only need to know whether the processor supports SMX.
++/// The concrete representation isn't important as long as the `has_smx`
++/// query is available.
++#[derive(Debug, Clone, Copy)]
++pub struct CpuidFeatureInfo {
++    has_smx: bool,
++}
++
++impl CpuidFeatureInfo {
++    pub fn new() -> Self {
++        let cpuid = CpuId::new();
++        let has_smx = cpuid.get_feature_info().map(|fi| fi.has_smx()).unwrap_or(false);
++
++        Self { has_smx }
++    }
++
++    #[inline]
++    pub fn has_smx(&self) -> bool {
++        self.has_smx
++    }
++}
++
++/// Per-vCPU virtual machine state.
+ ///
+-/// # Important Note
+-/// This structure is very large (~4.2MB) and MUST be allocated on the heap, never on the stack.
+-/// Use `Box::new_zeroed()` or an equivalent heap allocation method to allocate it safely.
++/// Several other modules access extra fields on `Vm` (EPT, monitor-trap
++/// state, etc.). Those fields live here so their code can compile
++/// unchanged.
+ pub struct Vm {
+     /// The VMXON (Virtual Machine Extensions On) region for the VM.
+-    /// - Aligned to 4096 bytes (0x1000)
+     pub vmxon_region: Vmxon,
+ 
+     /// The VMCS (Virtual Machine Control Structure) for the VM.
+-    /// - Aligned to 4096 bytes (0x1000)
+     pub vmcs_region: Vmcs,
+ 
+     /// Paging tables for the host.
+-    /// - Pml4: 4096 bytes (0x1000)
+-    /// - Pdpt: 4096 bytes (0x1000)
+-    /// - Pd: 512 * 4096 bytes (since each Pd is 4096 bytes) (0x200000)
+-    /// - Total: 4096 + 4096 + (512 * 4096) = 2,096,128 bytes (0x200800)
+     pub host_paging: PageTables,
+ 
+     /// The primary EPT (Extended Page Tables) for the VM.
+-    /// - Pml4: 4096 bytes (0x1000)
+-    /// - Pdpt: 4096 bytes (0x1000)
+-    /// - Pd: 512 * 4096 bytes (0x200000)
+-    /// - Pt: 4096 bytes (0x1000)
+-    /// - Total: 4096 + 4096 + (512 * 4096) + 4096 = 2,100,224 bytes (0x201000)
+     pub primary_ept: Ept,
+ 
+     /// The primary EPTP (Extended Page Tables Pointer) for the VM.
+-    /// - Size: 8 bytes (0x8)
+     pub primary_eptp: u64,
+ 
+-    /// State of guest general-purpose registers.
+-    /// - Size: 400 bytes (0x190)
++    /// General-purpose registers saved/restored by the VM-entry/exit assembly stubs.
+     pub guest_registers: GuestRegisters,
+ 
+-    /// Flag indicating if the VM has been launched.
+-    /// - Size: 1 byte (0x1)
++    /// Whether this VM has already executed at least one successful VM-entry.
+     pub has_launched: bool,
+ 
+-    /// The old RFLAGS value before turning off the interrupt flag.
+-    /// Used for restoring the RFLAGS register after handling the Monitor Trap Flag (MTF) VM exit.
+-    /// - Size: 8 bytes (Option<u64>) (0x8)
+-    pub old_rflags: Option<u64>,
+-
+-    /// The number of times the MTF (Monitor Trap Flag) should be triggered before disabling it for restoring overwritten instructions.
+-    /// - Size: 8 bytes (Option<u64>) (0x8)
++    /// Optional single-step / MTF instruction counter.
+     pub mtf_counter: Option<u64>,
+ 
+-    /// The CPUID feature information for the VM.
+-    pub cpuid_feature_info: FeatureInfo,
++    /// Previous RFLAGS value used by the MTF logic.
++    pub old_rflags: Option<u64>,
+ 
+-    /// The CPUID extended feature information for the VM.
++    /// Mask of XCR0 bits that are *not* supported by the host.
+     pub xcr0_unsupported_mask: u64,
++
++    /// Cached CPUID feature information.
++    pub cpuid_feature_info: CpuidFeatureInfo,
+ }
+ 
+ impl Vm {
+-    /// Creates a new zeroed VM instance.
+-    pub fn zeroed() -> MaybeUninit<Self> {
+-        MaybeUninit::zeroed()
++    /// Create a new VM context from a captured register set.
++    pub fn new(guest_registers: GuestRegisters) -> Self {
++        // It is safe to zero these plain-old-data structures before
++        // calling their own initialisers.
++        let vmxon_region: Vmxon = unsafe { core::mem::zeroed() };
++        let vmcs_region: Vmcs = unsafe { core::mem::zeroed() };
++        let host_paging: PageTables = unsafe { core::mem::zeroed() };
++        let primary_ept: Ept = unsafe { core::mem::zeroed() };
++
++        Self {
++            vmxon_region,
++            vmcs_region,
++            host_paging,
++            primary_ept,
++            primary_eptp: 0,
++            guest_registers,
++            has_launched: false,
++            mtf_counter: None,
++            old_rflags: None,
++            xcr0_unsupported_mask: 0,
++            cpuid_feature_info: CpuidFeatureInfo::new(),
++        }
+     }
+ 
+-    /// Initializes a new VM instance with specified guest registers.
++    /// One-time initialisation hook used by the higher-level VMM code.
+     ///
+-    /// Sets up the necessary environment for the VM, including VMCS initialization, host and guest
+-    /// descriptor tables, and paging structures. Prepares the VM for execution.
+-    ///
+-    /// # Arguments
+-    ///
+-    /// - `guest_registers`: The initial state of guest registers for the VM.
+-    ///
+-    /// # Returns
+-    ///
+-    /// Returns `Ok(())` on success, or an `Err(HypervisorError)` if any part of the setup fails.
++    /// This wires up the EPT identity map and initialises the VMCS
++    /// revision ID.  More advanced configuration (VMXON, VMCS
++    /// activation, etc.) is handled in dedicated helpers so that the
++    /// call-sites in `vmm.rs` can remain unchanged.
+     pub fn init(&mut self, guest_registers: &GuestRegisters) -> Result<(), HypervisorError> {
+         trace!("Creating VM");
+ 
+@@ -138,7 +144,7 @@ impl Vm {
+         self.primary_eptp = self.primary_ept.create_eptp_with_wb_and_4lvl_walk()?;
+ 
+         trace!("Initializing Guest Registers");
+-        self.guest_registers = guest_registers.clone();
++        self.guest_registers = *guest_registers;
+ 
+         trace!("Initializing Launch State");
+         self.has_launched = false;
+@@ -149,7 +155,7 @@ impl Vm {
+ 
+         trace!("Getting and Setting CPUID Feature Information and XCR0 Unsupported Mask");
+         let cpuid_ext_state_info = cpuid!(0x0d, 0x00);
+-        self.cpuid_feature_info = CpuId::new().get_feature_info().ok_or(HypervisorError::CPUUnsupported)?;
++        self.cpuid_feature_info = CpuidFeatureInfo::new();
+         self.xcr0_unsupported_mask = !((cpuid_ext_state_info.edx as u64) << 32 | cpuid_ext_state_info.eax as u64);
+ 
+         trace!("VM created");
+@@ -158,6 +164,14 @@ impl Vm {
+     }
+ 
+     /// Activates the VMXON region to enable VMX operation.
++    ///
++    /// Sets up the VMXON region and executes the VMXON instruction. This involves configuring control registers,
++    /// adjusting the IA32_FEATURE_CONTROL MSR, and validating the VMXON region's revision ID to ensure the CPU is ready
++    /// for VMX operation mode.
++    ///
++    /// # Returns
++    ///
++    /// Returns `Ok(())` on successful activation, or an `Err(HypervisorError)` if any step in the activation process fails.
+     pub fn activate_vmxon(&mut self) -> Result<(), HypervisorError> {
+         trace!("Setting up VMXON region");
+         self.setup_vmxon()?;
+@@ -170,6 +184,15 @@ impl Vm {
+         Ok(())
+     }
+ 
++    /// Prepares the system for VMX operation by configuring necessary control registers and MSRs.
++    ///
++    /// Ensures that the system meets all prerequisites for VMX operation as defined by Intel's specifications.
++    /// This includes enabling VMX operation through control register modifications, setting the lock bit in
++    /// IA32_FEATURE_CONTROL MSR, and adjusting mandatory CR0 and CR4 bits.
++    ///
++    /// # Returns
++    ///
++    /// Returns `Ok(())` if all configurations are successfully applied, or an `Err(HypervisorError)` if adjustments fail.
+     fn setup_vmxon(&mut self) -> Result<(), HypervisorError> {
+         trace!("Enabling Virtual Machine Extensions (VMX)");
+         Vmxon::enable_vmx_operation();
+@@ -191,36 +214,54 @@ impl Vm {
+     }
+ 
+     /// Activates the VMCS region for the VM, preparing it for execution.
++    ///
++    /// Clears and loads the VMCS region, setting it as the current VMCS for VMX operations.
++    /// Calls `setup_vmcs` to configure the VMCS with guest, host, and control settings.
++    ///
++    /// # Returns
++    ///
++    /// Returns `Ok(())` on successful activation, or an `Err(HypervisorError)` if activation fails.
+     pub fn activate_vmcs(&mut self) -> Result<(), HypervisorError> {
+         trace!("Activating VMCS");
++        // Clear the VMCS region.
+         vmclear(&self.vmcs_region as *const _ as _);
+         trace!("VMCLEAR successful!");
+ 
++        // Load current VMCS pointer.
+         vmptrld(&self.vmcs_region as *const _ as _);
+         trace!("VMPTRLD successful!");
+ 
+         self.setup_vmcs()?;
++
+         trace!("VMCS activated successfully!");
+ 
+         Ok(())
+     }
+ 
+     /// Configures the VMCS with necessary settings for guest and host state, and VM execution controls.
++    ///
++    /// # Returns
++    ///
++    /// Returns `Ok(())` if VMCS setup is successful, or an `Err(HypervisorError)` for setup failures.
+     pub fn setup_vmcs(&mut self) -> Result<(), HypervisorError> {
+         trace!("Setting up VMCS");
+ 
+         let primary_eptp = self.primary_eptp;
+ 
++        // Lock the shared hook manager
+         let hook_manager = SHARED_HOOK_MANAGER.lock();
++
+         let msr_bitmap = &hook_manager.msr_bitmap as *const _ as u64;
+ 
++        // Lock the descriptor manager
+         let descriptor_manager = SHARED_DESCRIPTOR_MANAGER.lock();
++
+         let guest_descriptors = &descriptor_manager.guest_descriptor;
+         let host_descriptors = &descriptor_manager.host_descriptor;
+ 
+         let pml4_pa = self.host_paging.get_pml4_pa()?;
+ 
+-        Vmcs::setup_guest_registers_state(guest_descriptors, &self.guest_registers);
++        Vmcs::setup_guest_registers_state(guest_descriptors, &self.guest_registers, pml4_pa);
+         Vmcs::setup_host_registers_state(&host_descriptors, pml4_pa)?;
+         Vmcs::setup_vmcs_control_fields(primary_eptp, msr_bitmap)?;
+ 
+@@ -229,39 +270,82 @@ impl Vm {
+         Ok(())
+     }
+ 
+-    /// Executes the VM, running in a loop until a VM-exit occurs.
++    /// Executes the VM, running until the next VM-exit.
++    ///
++    /// Returns the decoded basic VM-exit reason if VM-entry succeeded.
+     pub fn run(&mut self) -> Result<VmxBasicExitReason, HypervisorError> {
+-        // For the first launch, dump guest state *before* VM-entry.
++        // Set Host RSP to current stack pointer for diagnostics
++        // The assembly stub will set it again right before VMLAUNCH
++        let current_rsp: u64;
++        unsafe {
++            core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack, preserves_flags));
++        }
++        vmwrite(vmcs::host::RSP, current_rsp);
++
++        // For the first launch, dump BOTH guest and host state *before* VM-entry.
+         if !self.has_launched {
+-            error!("=== Pre-VMLAUNCH guest state dump ===");
++            error!("=== Pre-VMLAUNCH diagnostics ===");
+             diagnose_guest_state_validity();
++            diagnose_host_state_validity();
++
++            // Verify EPT translation for guest RIP
++            let guest_rip = vmread(vmcs::guest::RIP);
++            error!("=== EPT TRANSLATION CHECK ===");
++            error!("Verifying EPT translation for guest RIP: {:#x}", guest_rip);
++
++            // Extract EPT PML4 base from EPTP (bits 51:12)
++            let ept_pml4_base = self.primary_eptp & !0xFFF;
++            error!("EPT PML4 base: {:#x}", ept_pml4_base);
++
++            match unsafe { Ept::translate_guest_pa_to_host_pa(ept_pml4_base, guest_rip) } {
++                Ok(host_pa) => {
++                    error!("  SUCCESS: EPT translates guest PA {:#x} -> host PA {:#x}", guest_rip, host_pa);
++                    // Try to read the first few bytes at this address
++                    let ptr = host_pa as *const u8;
++                    let bytes = unsafe { core::slice::from_raw_parts(ptr, 16) };
++                    error!("  First 16 bytes at host PA: {:02x?}", bytes);
++                    error!("  Expected HLT instruction (0xF4) at start");
++                }
++                Err(e) => {
++                    error!("  ERROR: EPT translation failed: {:?}", e);
++                    error!("  This means the EPT doesn't have a valid mapping for guest RIP!");
++                }
++            }
+         }
+ 
+         // Run the VM until the VM-exit occurs (or VM-instruction failure).
++        error!("=== ABOUT TO CALL launch_vm ===");
++        error!("launch_vm function address: {:#x}", launch_vm as usize);
++        error!("guest_registers address: {:#x}", &self.guest_registers as *const _ as usize);
++        error!("has_launched value: {}", self.has_launched);
++
++        // Sanity check: verify VMCS is loaded by reading a field
++        let test_read = vmread(vmcs::guest::RIP);
++        error!("Sanity check - can read VMCS, Guest RIP: {:#x}", test_read);
++
+         let flags_raw = unsafe { launch_vm(&mut self.guest_registers, u64::from(self.has_launched)) };
+-        trace!("VM-entry: launch_vm returned RFLAGS = 0x{:x}", flags_raw);
+ 
+-        let flags = RFlags::from_raw(flags_raw);
++        // Log immediately after launch_vm returns
++        error!("=== POST-VMLAUNCH: launch_vm returned ===");
++        error!("Returned RFLAGS: 0x{:016x}", flags_raw);
+ 
+-        if let Err(e) = Self::vm_succeed(flags) {
+-            error!("VM-entry failed; dumping guest state for diagnostics");
+-            diagnose_guest_state_validity();
++        trace!("VM-entry: launch_vm returned RFLAGS = 0x{:x}", flags_raw);
+ 
+-            let vm_error = unsafe { vmread(vmcs::ro::VM_INSTRUCTION_ERROR) as u32 };
+-            error!("VM-instruction error code (raw): 0x{:x}", vm_error);
++        // Interpret RFLAGS returned by the vmlaunch/vmresume stub.
++        let flags = RFlags::from_bits_truncate(flags_raw);
+ 
+-            return Err(e);
+-        }
++        // Check whether the VM-entry instruction succeeded.
++        Self::vm_succeed(flags)?;
+ 
++        // VM-entry succeeded; this VM has now been launched at least once.
+         self.has_launched = true;
+-        // trace!("VM-exit occurred!");
+ 
+-        // VM-exit occurred. Copy the guest register values from VMCS so that
+-        // `self.guest_registers` is complete and up to date.
++        // Refresh cached guest architectural state from the VMCS.
+         self.guest_registers.rip = vmread(vmcs::guest::RIP);
+         self.guest_registers.rsp = vmread(vmcs::guest::RSP);
+         self.guest_registers.rflags = vmread(vmcs::guest::RFLAGS);
+ 
++        // Decode and return the basic exit reason.
+         let exit_reason = vmread(vmcs::ro::EXIT_REASON) as u32;
+         trace!("VM-exit: raw EXIT_REASON = 0x{:x}", exit_reason);
+ 
+@@ -276,6 +360,17 @@ impl Vm {
+     }
+ 
+     /// Verifies that the `launch_vm` function executed successfully.
++    ///
++    /// This method checks the RFlags for indications of failure from the `launch_vm` function.
++    /// If a failure is detected, it will return an error with details.
++    ///
++    /// # Arguments
++    ///
++    /// * `flags`: The RFlags value post-execution of the `launch_vm` function.
++    ///
++    /// Reference: Intel® 64 and IA-32 Architectures Software Developer's Manual:
++    /// - 31.2 CONVENTIONS
++    /// - 31.4 VM INSTRUCTION ERROR NUMBERS
+     fn vm_succeed(flags: RFlags) -> Result<(), HypervisorError> {
+         if flags.contains(RFlags::FLAGS_ZF) {
+             let instruction_error = vmread(vmcs::ro::VM_INSTRUCTION_ERROR) as u32;
+@@ -285,7 +380,7 @@ impl Vm {
+                     Err(HypervisorError::VmInstructionError)
+                 }
+                 None => {
+-                    error!("Unknown VM instruction error: 0x{:x}", instruction_error);
++                    error!("Unknown VM instruction error: {:#x}", instruction_error);
+                     Err(HypervisorError::UnknownVMInstructionError)
+                 }
+             };
+diff --git a/hypervisor/src/intel/vmcs.rs b/hypervisor/src/intel/vmcs.rs
+index 00bdd34..7b7142d 100644
+--- a/hypervisor/src/intel/vmcs.rs
++++ b/hypervisor/src/intel/vmcs.rs
+@@ -58,33 +58,31 @@ impl Vmcs {
+     /// # Arguments
+     /// * `guest_descriptor` - Descriptor tables for the guest.
+     /// * `guest_registers` - Guest registers for the guest.
+-    pub fn setup_guest_registers_state(guest_descriptor: &Descriptors, guest_registers: &GuestRegisters) {
++    /// * `host_cr3` - The host's CR3 value (PML4 physical address) to use for guest
++    pub fn setup_guest_registers_state(guest_descriptor: &Descriptors, guest_registers: &GuestRegisters, host_cr3: u64) {
+         log::debug!("Setting up Guest Registers State");
+ 
+-        let idtr = sidt();
+-
+         // ---------------------------------------------------------------------
+         // Control registers: CR0 / CR3 / CR4
+         // ---------------------------------------------------------------------
+         //
+-        // Guest CR4 must *not* have VMXE set. The host needs VMXE=1 to run VMX,
+-        // but Intel requires the guest not to have VMX enabled unless you
+-        // intend to support nested virtualization.
+-        //
+-        // So:
+-        //   - Read the current CR0/CR4 from the CPU
+-        //   - Mask out VMXE from CR4 for the guest
+-        //   - Write those into guest CR0/CR3/CR4
+-        let guest_cr0 = Cr0::read_raw();
+-        let guest_cr3 = cr3();
+-        let raw_cr4 = Cr4::read_raw();
+-        let guest_cr4 = raw_cr4 & !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits();
++        // TEMPORARY DEBUG: Try 32-bit protected mode instead of 64-bit
++        // to rule out long-mode-specific issues
++        let mut guest_cr0 = Cr0::read_raw();
++        guest_cr0 &= !Cr0Flags::PAGING.bits(); // Disable PG bit
++        guest_cr0 &= !Cr0Flags::WRITE_PROTECT.bits(); // Disable WP bit
++
++        let guest_cr3 = 0u64; // CR3 not used when paging is disabled
++
++        let mut guest_cr4 = Cr4::read_raw();
++        guest_cr4 &= !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits();
++        guest_cr4 &= !Cr4Flags::PHYSICAL_ADDRESS_EXTENSION.bits(); // Disable PAE for 32-bit mode
+ 
+         vmwrite(vmcs::guest::CR0, guest_cr0);
+         vmwrite(vmcs::guest::CR3, guest_cr3);
+         vmwrite(vmcs::guest::CR4, guest_cr4);
+ 
+-        log::debug!("Guest CR0: {:#018x}, sanitized Guest CR4: {:#018x}", guest_cr0, guest_cr4);
++        log::debug!("Guest CR0 (32-bit mode): {:#018x}, Guest CR3: {:#018x}, Guest CR4: {:#018x}", guest_cr0, guest_cr3, guest_cr4);
+ 
+         // Debug registers
+         vmwrite(vmcs::guest::DR7, unsafe { dr7().0 as u64 });
+@@ -94,65 +92,97 @@ impl Vmcs {
+         vmwrite(vmcs::guest::RIP, guest_registers.rip);
+         vmwrite(vmcs::guest::RFLAGS, rflags::read().bits());
+ 
++        log::debug!("Guest RSP: {:#018x}, Guest RIP: {:#018x}", guest_registers.rsp, guest_registers.rip);
++
+         // ---------------------------------------------------------------------
+         // IA32_EFER: must be consistent with IA32E_MODE_GUEST entry controls
+         // ---------------------------------------------------------------------
+         //
+-        // VM-entry is configured with IA32E_MODE_GUEST set. Intel requires:
+-        //   - CR0.PG = 1
+-        //   - CR4.PAE = 1
+-        //   - IA32_EFER.LME = 1
+-        //   - IA32_EFER.LMA = 1
+-        //
+-        // We mirror the host's IA32_EFER into the guest field so that
+-        // the guest enters a valid long mode.
+-        let guest_efer = rdmsr(msr::IA32_EFER);
++        // TEMPORARY DEBUG: Disable long mode to test 32-bit protected mode
++        let mut guest_efer = rdmsr(msr::IA32_EFER);
++        guest_efer &= !(1 << 8); // Clear LME (Long Mode Enable)
++        guest_efer &= !(1 << 10); // Clear LMA (Long Mode Active)
+         vmwrite(vmcs::guest::IA32_EFER_FULL, guest_efer);
+ 
++        log::debug!("Guest EFER (32-bit mode): {:#018x}", guest_efer);
++
++        // ---------------------------------------------------------------------
+         // Segment selectors
+-        vmwrite(vmcs::guest::CS_SELECTOR, cs().bits());
+-        vmwrite(vmcs::guest::SS_SELECTOR, ss().bits());
+-        vmwrite(vmcs::guest::DS_SELECTOR, ds().bits());
+-        vmwrite(vmcs::guest::ES_SELECTOR, es().bits());
+-        vmwrite(vmcs::guest::FS_SELECTOR, fs().bits());
+-        vmwrite(vmcs::guest::GS_SELECTOR, gs().bits());
++        // ---------------------------------------------------------------------
++        // CRITICAL FIX: Use selector 0x0008 for CS (index 1) instead of 0x0018
++        // Index 1 is more likely to be a valid code segment in the UEFI GDT
++        vmwrite(vmcs::guest::CS_SELECTOR, 0x0008u16); // Use index 1 instead of current CS
++        vmwrite(vmcs::guest::SS_SELECTOR, 0x0010u16); // Use index 2 for SS (data segment)
++        vmwrite(vmcs::guest::DS_SELECTOR, 0x0010u16);
++        vmwrite(vmcs::guest::ES_SELECTOR, 0x0010u16);
++        vmwrite(vmcs::guest::FS_SELECTOR, 0x0010u16);
++        vmwrite(vmcs::guest::GS_SELECTOR, 0x0010u16);
+ 
+         vmwrite(vmcs::guest::LDTR_SELECTOR, 0u16);
+-        vmwrite(vmcs::guest::TR_SELECTOR, guest_descriptor.tr.bits());
+-
+-        // All segment base registers are assumed to be zero, except that of TR.
+-        vmwrite(vmcs::guest::TR_BASE, guest_descriptor.tss.base);
+-
+-        // Segment limits
+-        vmwrite(vmcs::guest::CS_LIMIT, lsl(ss()));
+-        vmwrite(vmcs::guest::SS_LIMIT, lsl(ss()));
+-        vmwrite(vmcs::guest::DS_LIMIT, lsl(ds()));
+-        vmwrite(vmcs::guest::ES_LIMIT, lsl(es()));
+-        vmwrite(vmcs::guest::FS_LIMIT, lsl(fs()));
+-        vmwrite(vmcs::guest::GS_LIMIT, lsl(gs()));
++        // For 32-bit mode, TR can be 0 with unrestricted guest
++        vmwrite(vmcs::guest::TR_SELECTOR, 0u16);
++
++        // All segment base registers are zero for flat model
++        vmwrite(vmcs::guest::TR_BASE, 0u64);
++
++        // ---------------------------------------------------------------------
++        // Segment limits - use flat 4GB limit for 32-bit mode
++        // ---------------------------------------------------------------------
++        vmwrite(vmcs::guest::CS_LIMIT, 0xFFFFFFFFu32);
++        vmwrite(vmcs::guest::SS_LIMIT, 0xFFFFFFFFu32);
++        vmwrite(vmcs::guest::DS_LIMIT, 0xFFFFFFFFu32);
++        vmwrite(vmcs::guest::ES_LIMIT, 0xFFFFFFFFu32);
++        vmwrite(vmcs::guest::FS_LIMIT, 0xFFFFFFFFu32);
++        vmwrite(vmcs::guest::GS_LIMIT, 0xFFFFFFFFu32);
+         vmwrite(vmcs::guest::LDTR_LIMIT, 0u32);
+-        vmwrite(vmcs::guest::TR_LIMIT, guest_descriptor.tr.bits());
+-
+-        // Segment access rights
+-        vmwrite(vmcs::guest::CS_ACCESS_RIGHTS, access_rights_from_native(lar(cs())) as u64);
+-        vmwrite(vmcs::guest::SS_ACCESS_RIGHTS, access_rights_from_native(lar(ss())) as u64);
+-        vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, access_rights_from_native(lar(ds())) as u64);
+-        vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, access_rights_from_native(lar(es())) as u64);
+-        vmwrite(vmcs::guest::FS_ACCESS_RIGHTS, access_rights_from_native(lar(fs())) as u64);
+-        vmwrite(vmcs::guest::GS_ACCESS_RIGHTS, access_rights_from_native(lar(gs())) as u64);
+-        vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, access_rights_from_native(0u32));
+-        vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, access_rights_from_native(guest_descriptor.tss.ar));
++        vmwrite(vmcs::guest::TR_LIMIT, 0x67u32); // Minimum size for 32-bit TSS
++
++        // ---------------------------------------------------------------------
++        // Segment access rights - manually set for 32-bit protected mode
++        // ---------------------------------------------------------------------
++        // CS: 32-bit code segment (type=0xB, present, DPL=0, G=1, D/B=1)
++        // Type 0xB = Execute/Read, accessed, conforming
++        vmwrite(vmcs::guest::CS_ACCESS_RIGHTS, 0xC09B as u64); // Present, DPL=0, Code, G=1, D/B=1
++
++        // Data segments: 32-bit data segment (type=0x3, present, DPL=0, G=1, D/B=1)
++        vmwrite(vmcs::guest::SS_ACCESS_RIGHTS, 0xC093 as u64); // Present, DPL=0, Data, G=1, D/B=1
++        vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, 0xC093 as u64);
++        vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, 0xC093 as u64);
++        vmwrite(vmcs::guest::FS_ACCESS_RIGHTS, 0xC093 as u64);
++        vmwrite(vmcs::guest::GS_ACCESS_RIGHTS, 0xC093 as u64);
++        vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, 0x10000 as u64); // Unusable
++        vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, 0x8B as u64); // 32-bit TSS (busy)
+ 
++        // ---------------------------------------------------------------------
+         // Descriptor tables
++        // ---------------------------------------------------------------------
+         vmwrite(vmcs::guest::GDTR_BASE, guest_descriptor.gdtr.base as u64);
+-        vmwrite(vmcs::guest::IDTR_BASE, idtr.base as u64);
+-
+         vmwrite(vmcs::guest::GDTR_LIMIT, guest_descriptor.gdtr.limit as u64);
+-        vmwrite(vmcs::guest::IDTR_LIMIT, idtr.limit as u64);
++
++        // Guest IDTR: Use the host's IDT for now since we're in unrestricted guest mode
++        // This prevents triple faults by ensuring valid exception handlers exist
++        let host_idtr = sidt();
++        vmwrite(vmcs::guest::IDTR_BASE, host_idtr.base as u64);
++        vmwrite(vmcs::guest::IDTR_LIMIT, host_idtr.limit as u64);
++
++        // Guest SYSENTER MSRs - must be initialized!
++        vmwrite(vmcs::guest::IA32_SYSENTER_CS, 0u64);
++        vmwrite(vmcs::guest::IA32_SYSENTER_ESP, 0u64);
++        vmwrite(vmcs::guest::IA32_SYSENTER_EIP, 0u64);
+ 
+         // No VMCS shadowing in use
+         vmwrite(vmcs::guest::LINK_PTR_FULL, u64::MAX);
+ 
++        // Guest interruptibility state - must be initialized!
++        // Set to 0 (no blocking conditions)
++        vmwrite(vmcs::guest::INTERRUPTIBILITY_STATE, 0u32);
++
++        // Guest activity state - 0 = Active
++        vmwrite(vmcs::guest::ACTIVITY_STATE, 0u32);
++
++        // Guest pending debug exceptions - must be 0
++        vmwrite(vmcs::guest::PENDING_DBG_EXCEPTIONS, 0u64);
++
+         log::debug!("Guest Registers State setup successfully!");
+     }
+ 
+@@ -169,17 +199,84 @@ impl Vmcs {
+ 
+         let host_idtr = sidt();
+ 
++        // ---------------------------------------------------------------------
++        // Host Control Registers (MANDATORY)
++        // ---------------------------------------------------------------------
++        // These MUST match the current CPU state with VMXE enabled
+         vmwrite(vmcs::host::CR0, Cr0::read_raw());
+         vmwrite(vmcs::host::CR3, pml4_pa);
+         vmwrite(vmcs::host::CR4, Cr4::read_raw());
+ 
++        // ---------------------------------------------------------------------
++        // Host RSP and RIP (MANDATORY)
++        // ---------------------------------------------------------------------
++        // RIP: Must point to the VM-exit handler
++        // The vmexit_handler is defined in vmexit.rs as a naked function
++        // that handles VM exits and returns control back to Rust code.
++        //
++        // NOTE: If you don't have a vmexit_handler function yet, you need to create one.
++        // For now, we'll use a placeholder that you MUST replace with your actual handler.
++
++        // Host RIP must point to the VM-exit handler
++        // This assembly function will be called when a VM-exit occurs
++        unsafe extern "C" {
++            fn vmexit_handler();
++        }
++        vmwrite(vmcs::host::RIP, vmexit_handler as u64);
++
++        // Host RSP will be set dynamically in the launch_vm assembly code
++        // before executing VMLAUNCH/VMRESUME
++        // NOTE: We do NOT set it here - the assembly stub in vmlaunch.rs
++        // sets it to the current stack pointer right before VMLAUNCH/VMRESUME
++        // This ensures we have a valid stack when VM-exit occurs
++        // DO NOT write 0 or any static value here!
++
++        // ---------------------------------------------------------------------
++        // Host Segment Selectors (MANDATORY)
++        // ---------------------------------------------------------------------
++        // CS and TR must use the NEW host GDT selectors
++        // SS, DS, ES, FS, GS should be set to valid selectors (or 0 with proper handling)
+         vmwrite(vmcs::host::CS_SELECTOR, host_descriptor.cs.bits());
++        vmwrite(vmcs::host::SS_SELECTOR, host_descriptor.cs.bits()); // Use same as CS for simplicity
++        vmwrite(vmcs::host::DS_SELECTOR, host_descriptor.cs.bits()); // Use same as CS for simplicity
++        vmwrite(vmcs::host::ES_SELECTOR, host_descriptor.cs.bits()); // Use same as CS for simplicity
++        vmwrite(vmcs::host::FS_SELECTOR, 0u16); // FS can be 0 if FS_BASE is set
++        vmwrite(vmcs::host::GS_SELECTOR, 0u16); // GS can be 0 if GS_BASE is set
+         vmwrite(vmcs::host::TR_SELECTOR, host_descriptor.tr.bits());
+ 
++        // ---------------------------------------------------------------------
++        // Host Segment Base Addresses (MANDATORY for FS, GS, TR, GDTR, IDTR)
++        // ---------------------------------------------------------------------
++        // Read current FS and GS base addresses from MSRs
++        let host_fs_base = rdmsr(msr::IA32_FS_BASE);
++        let host_gs_base = rdmsr(msr::IA32_GS_BASE);
++
++        vmwrite(vmcs::host::FS_BASE, host_fs_base);
++        vmwrite(vmcs::host::GS_BASE, host_gs_base);
+         vmwrite(vmcs::host::TR_BASE, host_descriptor.tss.base);
+         vmwrite(vmcs::host::GDTR_BASE, host_descriptor.gdtr.base as u64);
+         vmwrite(vmcs::host::IDTR_BASE, host_idtr.base as u64);
+ 
++        // ---------------------------------------------------------------------
++        // Host SYSENTER MSRs (MANDATORY)
++        // ---------------------------------------------------------------------
++        // These must be set even if not used
++        let host_sysenter_cs = rdmsr(msr::IA32_SYSENTER_CS);
++        let host_sysenter_esp = rdmsr(msr::IA32_SYSENTER_ESP);
++        let host_sysenter_eip = rdmsr(msr::IA32_SYSENTER_EIP);
++
++        vmwrite(vmcs::host::IA32_SYSENTER_CS, host_sysenter_cs);
++        vmwrite(vmcs::host::IA32_SYSENTER_ESP, host_sysenter_esp);
++        vmwrite(vmcs::host::IA32_SYSENTER_EIP, host_sysenter_eip);
++
++        // ---------------------------------------------------------------------
++        // Host IA32_EFER (CONDITIONAL - required if loading on VM-exit is enabled)
++        // ---------------------------------------------------------------------
++        // Since we set HOST_ADDRESS_SPACE_SIZE (bit 9) in exit controls,
++        // we should also load IA32_EFER on VM-exit
++        let host_efer = rdmsr(msr::IA32_EFER);
++        vmwrite(vmcs::host::IA32_EFER_FULL, host_efer);
++
+         log::debug!("Host Registers State setup successfully!");
+ 
+         Ok(())
+@@ -215,12 +312,13 @@ impl Vmcs {
+             | vmcs::control::SecondaryControls::CONCEAL_VMX_FROM_PT.bits()
+             | vmcs::control::SecondaryControls::UNRESTRICTED_GUEST.bits()) as u64;
+ 
+-        const ENTRY_CTL: u64 = (vmcs::control::EntryControls::IA32E_MODE_GUEST.bits()
+-            | vmcs::control::EntryControls::LOAD_DEBUG_CONTROLS.bits()
+-            | vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
++        const ENTRY_CTL: u64 =
++            (vmcs::control::EntryControls::LOAD_DEBUG_CONTROLS.bits() | vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
++        // NOTE: IA32E_MODE_GUEST is NOT set - we're testing 32-bit mode
+ 
+         const EXIT_CTL: u64 = (vmcs::control::ExitControls::HOST_ADDRESS_SPACE_SIZE.bits()
+             | vmcs::control::ExitControls::SAVE_DEBUG_CONTROLS.bits()
++            | vmcs::control::ExitControls::LOAD_IA32_EFER.bits()
+             | vmcs::control::ExitControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
+ 
+         const PINBASED_CTL: u64 = 0;
+@@ -248,7 +346,11 @@ impl Vmcs {
+         vmwrite(vmcs::control::CR4_READ_SHADOW, Cr4::read_raw() & !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits());
+ 
+         vmwrite(vmcs::control::MSR_BITMAPS_ADDR_FULL, msr_bitmap);
+-        // vmwrite(vmcs::control::EXCEPTION_BITMAP, 1u64 << (ExceptionInterrupt::Breakpoint as u32));
++        vmwrite(vmcs::control::EXCEPTION_BITMAP, 0u32); // No exceptions intercepted for now
++
++        // VM-entry interrupt information - must be 0 for normal entry
++        // These fields control event injection on VM entry
++        // For now, we don't inject any events, so set them all to 0
+ 
+         vmwrite(vmcs::control::EPTP_FULL, primary_eptp);
+         vmwrite(vmcs::control::VPID, VPID_TAG);
+@@ -348,6 +450,7 @@ impl fmt::Debug for Vmcs {
+             .field("Host IA32_SYSENTER_CS: ", &vmread(vmcs::host::IA32_SYSENTER_CS))
+             .field("Host IA32_SYSENTER_ESP: ", &vmread(vmcs::host::IA32_SYSENTER_ESP))
+             .field("Host IA32_SYSENTER_EIP: ", &vmread(vmcs::host::IA32_SYSENTER_EIP))
++            .field("Host IA32_EFER_FULL: ", &vmread(vmcs::host::IA32_EFER_FULL))
+             /* VMCS Control fields */
+             .field("Primary Proc Based Execution Controls: ", &vmread(vmcs::control::PRIMARY_PROCBASED_EXEC_CONTROLS))
+             .field("Secondary Proc Based Execution Controls: ", &vmread(vmcs::control::SECONDARY_PROCBASED_EXEC_CONTROLS))
+diff --git a/hypervisor/src/intel/vmlaunch.rs b/hypervisor/src/intel/vmlaunch.rs
+index 01a2931..3d01401 100644
+--- a/hypervisor/src/intel/vmlaunch.rs
++++ b/hypervisor/src/intel/vmlaunch.rs
+@@ -29,6 +29,9 @@ global_asm!(
+     r#"
+     .globl launch_vm
+ 
++    // VMCS field encodings
++    .set HOST_RSP, 0x00006C14
++
+     // Windows x64 / EFI calling convention:
+     //   RCX = &mut GuestRegisters
+     //   RDX = has_launched (0 = first entry -> VMLAUNCH, 1 = VMRESUME)
+@@ -43,14 +46,27 @@ launch_vm:
+     push    r14
+     push    r15
+ 
++    // CRITICAL: Set Host RSP in VMCS before VMLAUNCH/VMRESUME
++    // When a VM-exit occurs, the CPU will load RSP from VMCS HOST_RSP field.
++    // We want it to point to our current stack so we can return properly.
++    //
++    // Save the current RSP (after we've pushed callee-saved registers)
++    // This is where we want to return to after a VM-exit
++    mov     rax, rsp
++    
++    // Write it to VMCS HOST_RSP field
++    mov     rbx, HOST_RSP
++    vmwrite rbx, rax
++
+     // NOTE:
+     // For now we don't synchronize GuestRegisters <-> CPU GPRs here.
+     // VM entry/exit uses VMCS-managed control state, and our Rust code
+     // reads/writes VMCS guest fields directly (RIP/RSP/RFLAGS, etc.).
+     // This stub's job is just:
+-    //   - pick VMLAUNCH vs VMRESUME
+-    //   - execute it
+-    //   - return the resulting RFLAGS so vm_succeed() can decode errors.
++    //   - Set Host RSP in VMCS
++    //   - Pick VMLAUNCH vs VMRESUME
++    //   - Execute it
++    //   - Return the resulting RFLAGS so vm_succeed() can decode errors
+ 
+     // Decide between VMLAUNCH / VMRESUME based on `launched`.
+     test    rdx, rdx
+diff --git a/hypervisor/src/intel/vmlaunch_diagnostics.rs b/hypervisor/src/intel/vmlaunch_diagnostics.rs
+index 8aa17a5..78a2e8d 100644
+--- a/hypervisor/src/intel/vmlaunch_diagnostics.rs
++++ b/hypervisor/src/intel/vmlaunch_diagnostics.rs
+@@ -148,8 +148,19 @@ pub fn diagnose_host_state_validity() {
+     let host_cr4 = vmread(vmcs::host::CR4);
+ 
+     error!("Host CR0: 0x{:016x}", host_cr0);
++    let pe = (host_cr0 & 0x1) != 0;
++    let pg = (host_cr0 & (1 << 31)) != 0;
++    error!("  PE (Protected Mode): {}", pe);
++    error!("  PG (Paging): {}", pg);
++
+     error!("Host CR3: 0x{:016x}", host_cr3);
++
+     error!("Host CR4: 0x{:016x}", host_cr4);
++    let vmxe = (host_cr4 & (1 << 13)) != 0;
++    error!("  VMXE: {} (should be 1 in host)", vmxe);
++    if !vmxe {
++        error!("  ERROR: host CR4 missing VMXE bit!");
++    }
+ 
+     let host_rip = vmread(vmcs::host::RIP);
+     let host_rsp = vmread(vmcs::host::RSP);
+@@ -159,6 +170,13 @@ pub fn diagnose_host_state_validity() {
+     error!("  RIP canonical: {}", is_canonical(host_rip));
+     error!("  RSP canonical: {}", is_canonical(host_rsp));
+ 
++    if host_rip == 0 {
++        error!("  ERROR: Host RIP is zero!");
++    }
++    if host_rsp == 0 {
++        error!("  ERROR: Host RSP is zero!");
++    }
++
+     let host_cs = vmread(vmcs::host::CS_SELECTOR) as u16;
+     let host_ss = vmread(vmcs::host::SS_SELECTOR) as u16;
+     let host_ds = vmread(vmcs::host::DS_SELECTOR) as u16;
+@@ -168,17 +186,76 @@ pub fn diagnose_host_state_validity() {
+     let host_tr = vmread(vmcs::host::TR_SELECTOR) as u16;
+ 
+     error!("Host segments:");
+-    error!("  CS: 0x{:04x}", host_cs);
+-    error!("  SS: 0x{:04x}", host_ss);
+-    error!("  DS: 0x{:04x}", host_ds);
+-    error!("  ES: 0x{:04x}", host_es);
+-    error!("  FS: 0x{:04x}", host_fs);
+-    error!("  GS: 0x{:04x}", host_gs);
+-    error!("  TR: 0x{:04x}", host_tr);
++    error!("  CS: 0x{:04x} (RPL: {})", host_cs, host_cs & 0x3);
++    error!("  SS: 0x{:04x} (RPL: {})", host_ss, host_ss & 0x3);
++    error!("  DS: 0x{:04x} (RPL: {})", host_ds, host_ds & 0x3);
++    error!("  ES: 0x{:04x} (RPL: {})", host_es, host_es & 0x3);
++    error!("  FS: 0x{:04x} (RPL: {})", host_fs, host_fs & 0x3);
++    error!("  GS: 0x{:04x} (RPL: {})", host_gs, host_gs & 0x3);
++    error!("  TR: 0x{:04x} (RPL: {})", host_tr, host_tr & 0x3);
++
++    // All segment selectors must have RPL=0 for host
++    if (host_cs & 0x3) != 0 {
++        error!("  ERROR: Host CS has non-zero RPL!");
++    }
++    if (host_ss & 0x3) != 0 {
++        error!("  ERROR: Host SS has non-zero RPL!");
++    }
++    if (host_ds & 0x3) != 0 {
++        error!("  ERROR: Host DS has non-zero RPL!");
++    }
++    if (host_es & 0x3) != 0 {
++        error!("  ERROR: Host ES has non-zero RPL!");
++    }
++    if (host_tr & 0x3) != 0 {
++        error!("  ERROR: Host TR has non-zero RPL!");
++    }
+ 
++    let host_fs_base = vmread(vmcs::host::FS_BASE);
++    let host_gs_base = vmread(vmcs::host::GS_BASE);
++    let host_tr_base = vmread(vmcs::host::TR_BASE);
+     let host_gdtr_base = vmread(vmcs::host::GDTR_BASE);
+     let host_idtr_base = vmread(vmcs::host::IDTR_BASE);
+ 
++    error!("Host FS Base: 0x{:016x}", host_fs_base);
++    error!("Host GS Base: 0x{:016x}", host_gs_base);
++    error!("Host TR Base: 0x{:016x}", host_tr_base);
+     error!("Host GDTR base: 0x{:016x}", host_gdtr_base);
+     error!("Host IDTR base: 0x{:016x}", host_idtr_base);
++
++    if host_tr_base == 0 {
++        error!("  ERROR: Host TR base is zero!");
++    }
++    if host_gdtr_base == 0 {
++        error!("  ERROR: Host GDTR base is zero!");
++    }
++    if host_idtr_base == 0 {
++        error!("  ERROR: Host IDTR base is zero!");
++    }
++
++    // Check SYSENTER MSRs
++    let host_sysenter_cs = vmread(vmcs::host::IA32_SYSENTER_CS);
++    let host_sysenter_esp = vmread(vmcs::host::IA32_SYSENTER_ESP);
++    let host_sysenter_eip = vmread(vmcs::host::IA32_SYSENTER_EIP);
++
++    error!("Host IA32_SYSENTER_CS: 0x{:016x}", host_sysenter_cs);
++    error!("Host IA32_SYSENTER_ESP: 0x{:016x}", host_sysenter_esp);
++    error!("Host IA32_SYSENTER_EIP: 0x{:016x}", host_sysenter_eip);
++
++    // Check IA32_EFER
++    let host_efer = vmread(vmcs::host::IA32_EFER_FULL);
++    error!("Host IA32_EFER: 0x{:016x}", host_efer);
++    let efer_lme = (host_efer & (1 << 8)) != 0;
++    let efer_lma = (host_efer & (1 << 10)) != 0;
++    error!("  LME (Long Mode Enable): {}", efer_lme);
++    error!("  LMA (Long Mode Active): {}", efer_lma);
++
++    // Check exit controls to see if we're in IA-32e mode
++    let exit_controls = vmread(vmcs::control::VMEXIT_CONTROLS);
++    let host_address_space_size = (exit_controls & (1 << 9)) != 0;
++    error!("Host Address Space Size (64-bit mode): {}", host_address_space_size);
++
++    if host_address_space_size && (!efer_lme || !efer_lma) {
++        error!("  ERROR: Host is 64-bit but EFER.LME/LMA not set!");
++    }
+ }
+diff --git a/hypervisor/src/vmm.rs b/hypervisor/src/vmm.rs
+index c031a24..05dda75 100644
+--- a/hypervisor/src/vmm.rs
++++ b/hypervisor/src/vmm.rs
+@@ -36,7 +36,7 @@ use {
+         },
+         windows::eprocess::ProcessInformation,
+     },
+-    alloc::boxed::Box,
++    alloc::{boxed::Box, vec::Vec},
+     log::*,
+     x86::{
+         msr::IA32_VMX_EPT_VPID_CAP,
+@@ -94,11 +94,44 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
+ 
+     #[cfg(feature = "hide_hv_with_ept")]
+     {
+-        debug!("Hiding hypervisor memory... (NOTE: EPT HOOKS WON'T WORK IF THIS IS ENABLED UNLESS SHADOW PAGES ARE EXCLUDED)");
++        debug!("Hiding hypervisor memory with selective exclusions...");
++        debug!("NOTE: Critical VM-exit handlers will NOT be hidden to prevent triple fault");
++
+         let mut hook_manager = crate::intel::hooks::hook_manager::SHARED_HOOK_MANAGER.lock();
+         hook_manager.print_allocated_memory();
+-        match hook_manager.hide_hypervisor_memory(&mut vm, crate::intel::ept::AccessType::READ_WRITE_EXECUTE) {
+-            Ok(_) => debug!("Hypervisor memory hidden"),
++
++        // Get addresses of critical functions that must remain accessible during VM-exits
++        let mut exclude_pages = Vec::new();
++
++        // CRITICAL: The vmexit_handler must be executable when VM-exits occur
++        unsafe extern "C" {
++            fn vmexit_handler();
++        }
++        let vmexit_handler_addr = vmexit_handler as u64;
++        let vmexit_handler_page = vmexit_handler_addr & !0xFFF; // Align to 4KB
++        exclude_pages.push(vmexit_handler_page);
++        debug!("  Excluding vmexit_handler page: {:#x} (function at {:#x})", vmexit_handler_page, vmexit_handler_addr);
++
++        // Also exclude the launch_vm assembly function's page
++        // This is less critical but good practice
++        unsafe extern "efiapi" {
++            fn launch_vm(registers: *mut crate::intel::capture::GuestRegisters, launched: u64) -> u64;
++        }
++        let launch_vm_addr = launch_vm as u64;
++        let launch_vm_page = launch_vm_addr & !0xFFF;
++        if !exclude_pages.contains(&launch_vm_page) {
++            exclude_pages.push(launch_vm_page);
++            debug!("  Excluding launch_vm page: {:#x} (function at {:#x})", launch_vm_page, launch_vm_addr);
++        }
++
++        // Exclude any other critical pages
++        // You might want to exclude the entire .text section of your hypervisor
++        // or at least the VM-exit handling code paths
++
++        debug!("Total excluded pages: {}", exclude_pages.len());
++
++        match hook_manager.hide_hypervisor_memory_except(&mut vm, &exclude_pages, crate::intel::ept::AccessType::READ_WRITE_EXECUTE) {
++            Ok(_) => debug!("Hypervisor memory hidden (with {} critical pages excluded)", exclude_pages.len()),
+             Err(e) => panic!("Failed to hide hypervisor memory: {:?}", e),
+         };
+     }
+diff --git a/logs.txt b/logs.txt
+index 9dc9187..9848ed8 100644
+--- a/logs.txt
++++ b/logs.txt
+@@ -1,13 +1,16 @@
+ vcpu-0 INFO: The Matrix is an illusion
+ vcpu-0 DEBUG: Setting up the hypervisor
+-vcpu-0 DEBUG: Loaded image base: 0x96f9000..0xd73b000
++vcpu-0 DEBUG: Loaded image base: 0x96f4000..0xd73b000
+ vcpu-0 DEBUG: Starting hypervisor on all processors
+ vcpu-0 INFO: start_hypervisor_on_all_processors: ENTRY
+ vcpu-0 INFO: Total processors: 8, enabled: 8
+ vcpu-0 DEBUG: start_hypervisor_on_this_cpu: ENTRY
+ vcpu-0 DEBUG: capture_registers → already = false
+ vcpu-0 DEBUG: virtualizing CPU …
+-vcpu-0 DEBUG: virtualize_system(): landing=0x96fad20, host_stack_top=0xfbc5020
++vcpu-0 DEBUG: resume_from_virtualization virtual: 0x96f5000
++vcpu-0 DEBUG: resume_from_virtualization physical: 0x96f5000
++vcpu-0 DEBUG: Guest will resume at RIP (physical): 0x96f5000
++vcpu-0 DEBUG: virtualize_system(): landing=0x971eca0, host_stack_top=0xfbc5020
+ vcpu-0 DEBUG: landing(): calling start_hypervisor
+ vcpu-0 DEBUG: Starting hypervisor
+ vcpu-0 INFO: CPU is Intel
+@@ -26,50 +29,48 @@ vcpu-0 DEBUG: New GDT with TSS created for guest successfully!
+ vcpu-0 DEBUG: Creating a new GDT with TSS for host
+ vcpu-0 DEBUG: New GDT with TSS and IDT created for host successfully!
+ vcpu-0 DEBUG: Setting up Guest Registers State
+-vcpu-0 DEBUG: Guest CR0: 0x0000000080010033, sanitized Guest CR4: 0x0000000000000668
++vcpu-0 DEBUG: Guest CR0 (32-bit mode): 0x0000000000000033, Guest CR3: 0x0000000000000000, Guest CR4: 0x0000000000000648
++vcpu-0 DEBUG: Guest RSP: 0x000000000ffca528, Guest RIP: 0x00000000096f5000
++vcpu-0 DEBUG: Guest EFER (32-bit mode): 0x0000000000000000
+ vcpu-0 DEBUG: Guest Registers State setup successfully!
+ vcpu-0 DEBUG: Setting up Host Registers State
+ vcpu-0 DEBUG: Host Registers State setup successfully!
+ vcpu-0 DEBUG: Setting up VMCS Control Fields
+ vcpu-0 DEBUG: VMCS Control Fields setup successfully!
+ vcpu-0 DEBUG: VMCS activated
+-vcpu-0 DEBUG: Hiding hypervisor memory... (NOTE: EPT HOOKS WON'T WORK IF THIS IS ENABLED UNLESS SHADOW PAGES ARE EXCLUDED)
+-vcpu-0 DEBUG: Memory Range: start=0x96f9000, size=0x4042000
+-vcpu-0 DEBUG: Memory Range: start=0xfbc1020, size=0x4000
+-vcpu-0 DEBUG: Hypervisor memory hidden
+ vcpu-0 INFO: Launching the VM until a vmexit occurs...
+-vcpu-0 ERROR: === Pre-VMLAUNCH guest state dump ===
++vcpu-0 ERROR: === Pre-VMLAUNCH diagnostics ===
+ vcpu-0 ERROR: === GUEST STATE VALIDITY CHECK ===
+-vcpu-0 ERROR: Guest CR0: 0x0000000080010033
++vcpu-0 ERROR: Guest CR0: 0x0000000000000033
+ vcpu-0 ERROR:   PE (Protected Mode): true
+-vcpu-0 ERROR:   PG (Paging): true
+-vcpu-0 ERROR: Guest CR3: 0x000000000fc01000
+-vcpu-0 ERROR: Guest CR4: 0x0000000000000668
+-vcpu-0 ERROR:   PAE: true
++vcpu-0 ERROR:   PG (Paging): false
++vcpu-0 ERROR: Guest CR3: 0x0000000000000000
++vcpu-0 ERROR: Guest CR4: 0x0000000000000648
++vcpu-0 ERROR:   PAE: false
+ vcpu-0 ERROR:   VMXE: false (should be 0 in guest)
+ vcpu-0 ERROR: Guest RFLAGS: 0x0000000000000246
+ vcpu-0 ERROR:   RF (Resume Flag): false
+ vcpu-0 ERROR:   VM (Virtual-8086): false
+-vcpu-0 ERROR: Guest RIP: 0x00000000096fafbc
+-vcpu-0 ERROR:   IA-32e mode: true
++vcpu-0 ERROR: Guest RIP: 0x00000000096f5000
++vcpu-0 ERROR:   IA-32e mode: false
+ vcpu-0 ERROR:   RIP is canonical: true
+-vcpu-0 ERROR: Guest IA32_EFER: 0x0000000000000500
+-vcpu-0 ERROR:   LME (Long Mode Enable): true
+-vcpu-0 ERROR:   LMA (Long Mode Active): true
++vcpu-0 ERROR: Guest IA32_EFER: 0x0000000000000000
++vcpu-0 ERROR:   LME (Long Mode Enable): false
++vcpu-0 ERROR:   LMA (Long Mode Active): false
+ vcpu-0 ERROR: Guest CS:
+-vcpu-0 ERROR:   Selector: 0x0018
++vcpu-0 ERROR:   Selector: 0x0008
+ vcpu-0 ERROR:   Base: 0x0000000000000000
+ vcpu-0 ERROR:   Limit: 0xffffffff
+-vcpu-0 ERROR:   Access Rights: 0x0000a09b
++vcpu-0 ERROR:   Access Rights: 0x0000c09b
+ vcpu-0 ERROR:     Present: true
+ vcpu-0 ERROR:     DPL: 0
+ vcpu-0 ERROR:     Type: 0xb
+ vcpu-0 ERROR: Guest SS:
+-vcpu-0 ERROR:   Selector: 0x0008
++vcpu-0 ERROR:   Selector: 0x0010
+ vcpu-0 ERROR:   Access Rights: 0x0000c093
+ vcpu-0 ERROR:     Present: true
+ vcpu-0 ERROR: Guest GDTR:
+-vcpu-0 ERROR:   Base: 0x000000000972e8b8
++vcpu-0 ERROR:   Base: 0x00000000097388a0
+ vcpu-0 ERROR:   Limit: 0x003f
+ vcpu-0 ERROR: Guest IDTR:
+ vcpu-0 ERROR:   Base: 0x000000000fb53460
+@@ -77,3 +78,44 @@ vcpu-0 ERROR:   Limit: 0x0fff
+ vcpu-0 ERROR: Primary controls:  0x94006172
+ vcpu-0 ERROR: Secondary controls: 0x001010aa
+ vcpu-0 ERROR: Unrestricted Guest: true
++vcpu-0 ERROR: === HOST STATE CHECK ===
++vcpu-0 ERROR: Host CR0: 0x0000000080010033
++vcpu-0 ERROR:   PE (Protected Mode): true
++vcpu-0 ERROR:   PG (Paging): true
++vcpu-0 ERROR: Host CR3: 0x0000000009739000
++vcpu-0 ERROR: Host CR4: 0x0000000000002668
++vcpu-0 ERROR:   VMXE: true (should be 1 in host)
++vcpu-0 ERROR: Host RIP: 0x00000000096f505a
++vcpu-0 ERROR: Host RSP: 0x000000000fbc4b48
++vcpu-0 ERROR:   RIP canonical: true
++vcpu-0 ERROR:   RSP canonical: true
++vcpu-0 ERROR: Host segments:
++vcpu-0 ERROR:   CS: 0x0008 (RPL: 0)
++vcpu-0 ERROR:   SS: 0x0008 (RPL: 0)
++vcpu-0 ERROR:   DS: 0x0008 (RPL: 0)
++vcpu-0 ERROR:   ES: 0x0008 (RPL: 0)
++vcpu-0 ERROR:   FS: 0x0000 (RPL: 0)
++vcpu-0 ERROR:   GS: 0x0000 (RPL: 0)
++vcpu-0 ERROR:   TR: 0x0010 (RPL: 0)
++vcpu-0 ERROR: Host FS Base: 0x0000000000000000
++vcpu-0 ERROR: Host GS Base: 0x0000000000000000
++vcpu-0 ERROR: Host TR Base: 0x000000000fbb9f80
++vcpu-0 ERROR: Host GDTR base: 0x0000000009738838
++vcpu-0 ERROR: Host IDTR base: 0x000000000fb53460
++vcpu-0 ERROR: Host IA32_SYSENTER_CS: 0x0000000000000000
++vcpu-0 ERROR: Host IA32_SYSENTER_ESP: 0x0000000000000000
++vcpu-0 ERROR: Host IA32_SYSENTER_EIP: 0x0000000000000000
++vcpu-0 ERROR: Host IA32_EFER: 0x0000000000000500
++vcpu-0 ERROR:   LME (Long Mode Enable): true
++vcpu-0 ERROR:   LMA (Long Mode Active): true
++vcpu-0 ERROR: Host Address Space Size (64-bit mode): true
++vcpu-0 ERROR: === EPT TRANSLATION CHECK ===
++vcpu-0 ERROR: Verifying EPT translation for guest RIP: 0x96f5000
++vcpu-0 ERROR: EPT PML4 base: 0x993d000
++vcpu-0 ERROR:   SUCCESS: EPT translates guest PA 0x96f5000 -> host PA 0x96f5000
++vcpu-0 ERROR:   First 16 bytes at host PA: [f4, f4, eb, fd, 48, 89, 01, 48, 89, 49, 08, 48, 89, 51, 10, 48]
++vcpu-0 ERROR:   Expected HLT instruction (0xF4) at start
++vcpu-0 ERROR: === ABOUT TO CALL launch_vm ===
++vcpu-0 ERROR: launch_vm function address: 0x96f505b
++vcpu-0 ERROR: guest_registers address: 0x9b40000
++vcpu-0 ERROR: has_launched value: false
+diff --git a/uefi/Cargo.toml b/uefi/Cargo.toml
+index e3c146d..217254b 100644
+--- a/uefi/Cargo.toml
++++ b/uefi/Cargo.toml
+@@ -23,4 +23,4 @@ spin = "0.10.0"
+ com_logger = "0.1.2"
+ 
+ # Hypervisor crate, built with the same log configuration
+-hypervisor = { path = "../hypervisor", features = ["vmware", "hide_hv_with_ept"] }
++hypervisor = { path = "../hypervisor", features = ["vmware"] }
+diff --git a/uefi/src/processor.rs b/uefi/src/processor.rs
+index 41140cb..b7548b7 100644
+--- a/uefi/src/processor.rs
++++ b/uefi/src/processor.rs
+@@ -1,30 +1,118 @@
+ // uefi/src/processor.rs
+-
+ use {
+     crate::virtualize,
+-    core::{ffi::c_void, mem, ptr},
++    core::{arch::global_asm, ffi::c_void, mem, ptr},
+     hypervisor::intel::capture::{GuestRegisters, capture_registers},
+-    log::{debug, info},
++    log::{debug, error, info},
+     uefi::{Result, boot, proto::pi::mp::MpServices},
+ };
+ 
++// Assembly stub for guest resume point
++global_asm!(
++    r#"
++    .globl resume_from_virtualization
++resume_from_virtualization:
++    // Simplest possible code: just HLT immediately
++    // HLT will cause a VM-exit which we can handle
++    hlt
++    
++    // If we return from the HLT (after VMRESUME), loop forever
++2:
++    hlt
++    jmp 2b
++    "#
++);
++
++unsafe extern "C" {
++    fn resume_from_virtualization() -> !;
++}
++
++/// Converts a virtual address to a physical address using CR3.
++/// Performs a page table walk to find the physical address.
++unsafe fn virtual_to_physical(virt_addr: u64) -> u64 {
++    // Read CR3 to get the page table base
++    let cr3: u64;
++    core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
++
++    // Page table walk
++    const BASE_PAGE_SHIFT: u64 = 12;
++
++    // Extract indices from virtual address
++    let pml4_index = (virt_addr >> 39) & 0x1FF;
++    let pdpt_index = (virt_addr >> 30) & 0x1FF;
++    let pd_index = (virt_addr >> 21) & 0x1FF;
++    let pt_index = (virt_addr >> 12) & 0x1FF;
++
++    // PML4 entry
++    let pml4_base = (cr3 >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
++    let pml4_table = pml4_base as *const u64;
++    let pml4_entry = *pml4_table.add(pml4_index as usize);
++
++    if (pml4_entry & 1) == 0 {
++        error!("PML4 entry not present for vaddr {:#x}", virt_addr);
++        return virt_addr; // Fallback to identity mapping assumption
++    }
++
++    // PDPT entry
++    let pdpt_base = (pml4_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
++    let pdpt_table = pdpt_base as *const u64;
++    let pdpt_entry = *pdpt_table.add(pdpt_index as usize);
++
++    if (pdpt_entry & 1) == 0 {
++        error!("PDPT entry not present for vaddr {:#x}", virt_addr);
++        return virt_addr;
++    }
++
++    // Check if it's a 1GB page
++    if (pdpt_entry & (1 << 7)) != 0 {
++        let offset = virt_addr & 0x3FFF_FFFF; // 1GB offset (bits 0-29)
++        let phys_base = (pdpt_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
++        return phys_base + offset;
++    }
++
++    // PD entry
++    let pd_base = (pdpt_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
++    let pd_table = pd_base as *const u64;
++    let pd_entry = *pd_table.add(pd_index as usize);
++
++    if (pd_entry & 1) == 0 {
++        error!("PD entry not present for vaddr {:#x}", virt_addr);
++        return virt_addr;
++    }
++
++    // Check if it's a 2MB page
++    if (pd_entry & (1 << 7)) != 0 {
++        let offset = virt_addr & 0x1F_FFFF; // 2MB offset (bits 0-20)
++        let phys_base = (pd_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
++        return phys_base + offset;
++    }
++
++    // PT entry (4KB page)
++    let pt_base = (pd_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
++    let pt_table = pt_base as *const u64;
++    let pt_entry = *pt_table.add(pt_index as usize);
++
++    if (pt_entry & 1) == 0 {
++        error!("PT entry not present for vaddr {:#x}", virt_addr);
++        return virt_addr;
++    }
++
++    let offset = virt_addr & 0xFFF; // 4KB offset (bits 0-11)
++    let phys_base = (pt_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
++    phys_base + offset
++}
++
+ pub fn start_hypervisor_on_all_processors() -> Result<()> {
+     info!("start_hypervisor_on_all_processors: ENTRY");
+-
+     let mp_handle = boot::get_handle_for_protocol::<MpServices>()?;
+     let mp = boot::open_protocol_exclusive::<MpServices>(mp_handle)?;
+-
+     let counts = mp.get_number_of_processors()?;
+     info!("Total processors: {}, enabled: {}", counts.total, counts.enabled);
+-
+     start_hypervisor_on_this_cpu();
+-
+     if counts.enabled > 1 {
+         debug!("Starting hypervisor on {} APs", counts.enabled - 1);
+-
+         mp.startup_all_aps(true, start_hypervisor_on_ap as _, ptr::null_mut(), None, None)?;
+     }
+-
+     info!("HV installed successfully!");
+     Ok(())
+ }
+@@ -35,23 +123,40 @@ extern "efiapi" fn start_hypervisor_on_ap(_arg: *mut c_void) {
+ 
+ fn start_hypervisor_on_this_cpu() {
+     debug!("start_hypervisor_on_this_cpu: ENTRY");
+-
+     let mut regs: GuestRegisters = unsafe { mem::zeroed() };
+-
+     let already = unsafe { capture_registers(&mut regs) };
+-    regs.rax = 1;
+ 
+     debug!("capture_registers → already = {}", already);
+ 
+     if !already {
+         debug!("virtualizing CPU …");
++
++        // CRITICAL FIX: Convert virtual address to physical address
++        // With guest paging disabled, guest RIP must be a guest physical address
++        let resume_virt = resume_from_virtualization as u64;
++        let resume_phys = unsafe { virtual_to_physical(resume_virt) };
++
++        debug!("resume_from_virtualization virtual: {:#x}", resume_virt);
++        debug!("resume_from_virtualization physical: {:#x}", resume_phys);
++
++        // Set guest RIP to the PHYSICAL address
++        regs.rip = resume_phys;
++
++        // Set RAX to 0 for the initial launch
++        regs.rax = 0;
++
++        debug!("Guest will resume at RIP (physical): {:#x}", regs.rip);
++
+         virtualize::virtualize_system(&regs, landing_ptr());
+     } else {
+-        debug!("CPU already virtualized");
++        debug!("CPU already virtualized (returned from VM-exit)");
++        // At this point, the hypervisor is running and we've returned from a VM-exit
++        // This code path is reached after start_hypervisor() returns, which never happens
++        // because start_hypervisor() has an infinite loop
+     }
+ }
+ 
+-/// CORRECT PATH — and landing is now pub(crate)
++/// CORRECT PATH – and landing is now pub(crate)
+ fn landing_ptr() -> usize {
+     crate::virtualize::landing as usize
+ }

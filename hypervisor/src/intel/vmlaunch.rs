@@ -29,6 +29,9 @@ global_asm!(
     r#"
     .globl launch_vm
 
+    // VMCS field encodings
+    .set HOST_RSP, 0x00006C14
+
     // Windows x64 / EFI calling convention:
     //   RCX = &mut GuestRegisters
     //   RDX = has_launched (0 = first entry -> VMLAUNCH, 1 = VMRESUME)
@@ -43,14 +46,27 @@ launch_vm:
     push    r14
     push    r15
 
+    // CRITICAL: Set Host RSP in VMCS before VMLAUNCH/VMRESUME
+    // When a VM-exit occurs, the CPU will load RSP from VMCS HOST_RSP field.
+    // We want it to point to our current stack so we can return properly.
+    //
+    // Save the current RSP (after we've pushed callee-saved registers)
+    // This is where we want to return to after a VM-exit
+    mov     rax, rsp
+    
+    // Write it to VMCS HOST_RSP field
+    mov     rbx, HOST_RSP
+    vmwrite rbx, rax
+
     // NOTE:
     // For now we don't synchronize GuestRegisters <-> CPU GPRs here.
     // VM entry/exit uses VMCS-managed control state, and our Rust code
     // reads/writes VMCS guest fields directly (RIP/RSP/RFLAGS, etc.).
     // This stub's job is just:
-    //   - pick VMLAUNCH vs VMRESUME
-    //   - execute it
-    //   - return the resulting RFLAGS so vm_succeed() can decode errors.
+    //   - Set Host RSP in VMCS
+    //   - Pick VMLAUNCH vs VMRESUME
+    //   - Execute it
+    //   - Return the resulting RFLAGS so vm_succeed() can decode errors
 
     // Decide between VMLAUNCH / VMRESUME based on `launched`.
     test    rdx, rdx

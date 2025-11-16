@@ -22,7 +22,7 @@ pub enum MsrOperation {
 
 /// Represents the MSR Bitmap structure used in VMX.
 ///
-/// In processors that support the 1-setting of the “use MSR bitmaps” VM-execution control,
+/// In processors that support the 1-setting of the "use MSR bitmaps" VM-execution control,
 /// the VM-execution control fields include the 64-bit physical address of four contiguous
 /// MSR bitmaps, which are each 1-KByte in size.
 ///
@@ -68,7 +68,7 @@ impl MsrBitmap {
     pub fn modify_msr_interception(&mut self, msr: u32, access: MsrAccessType, operation: MsrOperation) {
         let msr_low = msr & 0x1FFF;
         let msr_index = (msr_low >> 3) as usize;
-        let msr_bit = (msr_low & 7) as u8;
+        let msr_bit = (msr_low & 7) as usize;
 
         let bitmap_section = match (msr >= 0xC000_0000, access) {
             (true, MsrAccessType::Write) => &mut self.write_high_msrs,
@@ -78,8 +78,8 @@ impl MsrBitmap {
         };
 
         match operation {
-            MsrOperation::Hook => bitmap_section[msr_index].set_bit(msr_bit as usize, true),
-            MsrOperation::Unhook => bitmap_section[msr_index].set_bit(msr_bit as usize, false),
+            MsrOperation::Hook => bitmap_section[msr_index].set_bit(msr_bit, true),
+            MsrOperation::Unhook => bitmap_section[msr_index].set_bit(msr_bit, false),
         }
     }
 }

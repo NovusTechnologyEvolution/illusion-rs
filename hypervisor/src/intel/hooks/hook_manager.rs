@@ -29,12 +29,12 @@ use {
     },
 };
 
-/// What kind of EPT hook we’re doing.
+/// What kind of EPT hook we're doing.
 #[derive(Debug, Clone, Copy)]
 pub enum EptHookType {
-    /// We’re hooking a function on the shadow page and placing an inline detour there.
+    /// We're hooking a function on the shadow page and placing an inline detour there.
     Function(InlineHookType),
-    /// We’re just hiding / protecting a page (your repo leaves this unimplemented).
+    /// We're just hiding / protecting a page (your repo leaves this unimplemented).
     Page,
 }
 
@@ -140,13 +140,67 @@ impl HookManager {
     }
 
     /// Hide hypervisor memory by swapping pages with a dummy page (2MB→4KB split first).
+    /// This version hides ALL hypervisor memory without exceptions.
     pub fn hide_hypervisor_memory(&mut self, vm: &mut Vm, page_permissions: AccessType) -> Result<(), HypervisorError> {
-        // we can’t mutate self while iterating &self, so collect first
+        // we can't mutate self while iterating &self, so collect first
         let pages: Vec<u64> = self.allocated_memory_ranges.iter().map(|(start, _)| *start as u64).collect();
 
         for guest_page_pa in pages {
             self.ept_hide_hypervisor_memory(vm, guest_page_pa, page_permissions)?;
         }
+        Ok(())
+    }
+
+    /// Hide hypervisor memory EXCEPT for specific page-aligned addresses.
+    /// This is critical to avoid hiding code that will execute during VM-exits (like vmexit_handler).
+    ///
+    /// # Arguments
+    /// * `vm` - The VM instance
+    /// * `exclude_pages` - Slice of page-aligned physical addresses to NOT hide
+    /// * `page_permissions` - EPT permissions for hidden pages
+    pub fn hide_hypervisor_memory_except(&mut self, vm: &mut Vm, exclude_pages: &[u64], page_permissions: AccessType) -> Result<(), HypervisorError> {
+        debug!("Hiding hypervisor memory with {} excluded pages", exclude_pages.len());
+
+        // Collect all pages we want to process
+        let mut pages_to_hide = Vec::new();
+
+        for (start, size) in &self.allocated_memory_ranges {
+            let start_addr = *start as u64;
+            let end_addr = start_addr + *size as u64;
+
+            // Process each 4KB page in this range
+            let mut current_page = start_addr & !0xFFF; // Align to 4KB
+            while current_page < end_addr {
+                // Check if this page should be excluded
+                let should_exclude = exclude_pages.iter().any(|&excluded| {
+                    let excluded_aligned = excluded & !0xFFF;
+                    current_page == excluded_aligned
+                });
+
+                if should_exclude {
+                    debug!("  Skipping page {:#x} (in exclusion list)", current_page);
+                } else {
+                    pages_to_hide.push(current_page);
+                }
+
+                current_page += 0x1000; // Move to next 4KB page
+            }
+        }
+
+        let num_pages = pages_to_hide.len();
+        debug!("Hiding {} pages (excluded {} pages)", num_pages, exclude_pages.len());
+
+        // Now hide all non-excluded pages WITHOUT invalidating after each one
+        // We'll do a single invalidation at the end for performance
+        for guest_page_pa in pages_to_hide {
+            self.ept_hide_hypervisor_memory_no_invalidate(vm, guest_page_pa, page_permissions)?;
+        }
+
+        // Single invalidation at the end for all changes
+        debug!("Invalidating EPT and VPID caches once for all {} pages", num_pages);
+        invept_all_contexts();
+        invvpid_all_contexts();
+
         Ok(())
     }
 
@@ -171,6 +225,37 @@ impl HookManager {
 
         invept_all_contexts();
         invvpid_all_contexts();
+
+        Ok(())
+    }
+
+    /// Hide a single hypervisor page WITHOUT invalidating caches.
+    /// Use this when hiding multiple pages, then call invalidation once at the end.
+    fn ept_hide_hypervisor_memory_no_invalidate(
+        &mut self,
+        vm: &mut Vm,
+        guest_page_pa: u64,
+        page_permissions: AccessType,
+    ) -> Result<(), HypervisorError> {
+        let guest_page_pa = PAddr::from(guest_page_pa).align_down_to_base_page();
+        let guest_large_page_pa = guest_page_pa.align_down_to_large_page();
+        let dummy_page_pa = self.dummy_page_pa;
+
+        self.memory_manager.map_large_page_to_pt(guest_large_page_pa.as_u64())?;
+
+        let pre_alloc_pt = self
+            .memory_manager
+            .get_page_table_as_mut(guest_large_page_pa.as_u64())
+            .ok_or(HypervisorError::PageTableNotFound)?;
+
+        if vm.primary_ept.is_large_page(guest_page_pa.as_u64()) {
+            vm.primary_ept.split_2mb_to_4kb(guest_large_page_pa.as_u64(), pre_alloc_pt)?;
+        }
+
+        vm.primary_ept
+            .swap_page(guest_page_pa.as_u64(), dummy_page_pa, page_permissions, pre_alloc_pt)?;
+
+        // NO invalidation here - caller will do it once for all pages
 
         Ok(())
     }

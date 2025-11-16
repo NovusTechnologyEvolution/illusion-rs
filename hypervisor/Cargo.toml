@@ -5,7 +5,6 @@ edition = "2024"
 
 [features]
 vmware = []
-hide_hv_with_ept = []
 
 [lib]
 name = "hypervisor"
