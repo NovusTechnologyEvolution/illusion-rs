@@ -44,6 +44,31 @@ use {
     },
 };
 
+/// Handler for VMLAUNCH/VMRESUME failures.
+/// Called from vmlaunch.rs assembly when ZF=1 or CF=1.
+#[unsafe(no_mangle)]
+pub unsafe extern "efiapi" fn vmlaunch_failed(rflags: u64, error_code: u64) {
+    // 0xFFFF is the custom error code we set in assembly for CF=1 (VMfailInvalid)
+    if error_code == 0xFFFF {
+        log::error!("CRITICAL: VMLAUNCH failed with VMfailInvalid (CF=1).");
+        log::error!("  -> This usually means the VMCS pointer is null, invalid, or corrupted.");
+        log::error!("  -> Check if the VMCS region was allocated and cleared correctly.");
+    } else {
+        log::error!("CRITICAL: VMLAUNCH failed with VMfailValid (ZF=1).");
+        log::error!("  -> VM Instruction Error: {} ({:#x})", error_code, error_code);
+        log::error!("  -> RFLAGS: {:#x}", rflags);
+
+        // Common error codes for debugging
+        match error_code {
+            7 => log::error!("  -> Reason: VM entry with invalid control field(s). Check Pin/Exec/Exit controls."),
+            26 => log::error!("  -> Reason: VM entry with events blocked by MOV SS."),
+            _ => log::error!("  -> Refer to Intel SDM Vol 3C, Chapter 30, Table 30-1."),
+        }
+    }
+
+    panic!("Hypervisor launch failed!");
+}
+
 /// Initiates the hypervisor, activating VMX and setting up the initial VM state.
 ///
 /// Validates CPU compatibility and VMX support, then proceeds to enable VMX operation.
@@ -75,7 +100,8 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
 
     debug!("VM structure allocated successfully");
 
-    match vm.init(guest_registers) {
+    // FIX: vm.init() now takes 0 arguments (due to changes in vm.rs/vmm.rs mismatch)
+    match vm.init() {
         Ok(_) => debug!("VM initialized"),
         Err(e) => panic!("Failed to initialize VM: {:?}", e),
     }
@@ -188,7 +214,7 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
                 // 27
                 VmxBasicExitReason::Vmxon => handle_vmxon(),
                 // 28
-                VmxBasicExitReason::ControlRegisterAccesses => handle_cr_reg_access(&mut vm).expect("Failed to handle CR access"),
+                VmxBasicExitReason::MovCr => handle_cr_reg_access(&mut vm).expect("Failed to handle CR access"), // FIX: Used MovCr
                 // 31
                 VmxBasicExitReason::Rdmsr => handle_msr_access(&mut vm, MsrAccessType::Read).expect("Failed to handle RDMSR"),
                 // 32

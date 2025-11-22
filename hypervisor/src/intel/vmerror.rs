@@ -39,7 +39,7 @@ pub enum VmxBasicExitReason {
     Vmwrite = 25,
     Vmxoff = 26,
     Vmxon = 27,
-    ControlRegisterAccesses = 28,
+    MovCr = 28, // Renamed from ControlRegisterAccesses to match vmm.rs
     MovDr = 29,
     IoInstruction = 30,
     Rdmsr = 31,
@@ -122,7 +122,7 @@ impl VmxBasicExitReason {
             25 => Some(Self::Vmwrite),
             26 => Some(Self::Vmxoff),
             27 => Some(Self::Vmxon),
-            28 => Some(Self::ControlRegisterAccesses),
+            28 => Some(Self::MovCr), // Updated Match
             29 => Some(Self::MovDr),
             30 => Some(Self::IoInstruction),
             31 => Some(Self::Rdmsr),
@@ -206,7 +206,7 @@ impl core::fmt::Display for VmxBasicExitReason {
             VmxBasicExitReason::Vmwrite => "Guest software attempted to execute VMWRITE",
             VmxBasicExitReason::Vmxoff => "Guest software attempted to execute VMXOFF",
             VmxBasicExitReason::Vmxon => "Guest software attempted to execute VMXON",
-            VmxBasicExitReason::ControlRegisterAccesses => "Control-register accesses",
+            VmxBasicExitReason::MovCr => "Control-register accesses", // Updated Match
             VmxBasicExitReason::MovDr => "Guest software attempted a MOV to or from a debug register",
             VmxBasicExitReason::IoInstruction => "Guest software attempted to execute an I/O instruction",
             VmxBasicExitReason::Rdmsr => "Guest software attempted to execute RDMSR",

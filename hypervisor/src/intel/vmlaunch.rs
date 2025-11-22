@@ -1,42 +1,29 @@
 // hypervisor/src/intel/vmlaunch.rs
-//! VM launch stub for Intel VMX.
-//!
-//! Small assembly stub that actually executes VMLAUNCH/VMRESUME and returns
-//! the resulting RFLAGS so Rust code can check for VM-instruction success/failure.
-
 use {
     crate::intel::capture::GuestRegisters,
     core::{arch::global_asm, mem},
 };
 
 unsafe extern "efiapi" {
-    /// Tries to launch a VM using the state laid out in `registers`.
-    ///
-    /// `launched`:
-    ///   - 0 → first entry, use VMLAUNCH
-    ///   - 1 → subsequent entries, use VMRESUME
-    ///
-    /// Returns the CPU RFLAGS after executing the VMX instruction.
     pub fn launch_vm(registers: &mut GuestRegisters, launched: u64) -> u64;
+    pub fn vmexit_asm_handler();
+    /// External handler defined in vmm.rs to report launch failures
+    pub fn vmlaunch_failed(rflags: u64, error_code: u64);
 }
 
-/// Safe wrapper around the EFI/assembly VM-launch routine.
 pub fn vmlaunch(registers: &mut GuestRegisters, launched: u64) -> u64 {
     unsafe { launch_vm(registers, launched) }
 }
 
 global_asm!(
     r#"
-    .globl launch_vm
+    .intel_syntax noprefix
+    .global launch_vm
+    .global vmexit_asm_handler
+    .global vmlaunch_failed
 
-    // VMCS field encodings
-    .set HOST_RSP, 0x00006C14
-
-    // Windows x64 / EFI calling convention:
-    //   RCX = &mut GuestRegisters
-    //   RDX = has_launched (0 = first entry -> VMLAUNCH, 1 = VMRESUME)
 launch_vm:
-    // Save callee-saved registers we might clobber in this stub.
+    // Save callee-saved registers
     push    rbx
     push    rbp
     push    rdi
@@ -45,48 +32,83 @@ launch_vm:
     push    r13
     push    r14
     push    r15
-
-    // CRITICAL: Set Host RSP in VMCS before VMLAUNCH/VMRESUME
-    // When a VM-exit occurs, the CPU will load RSP from VMCS HOST_RSP field.
-    // We want it to point to our current stack so we can return properly.
-    //
-    // Save the current RSP (after we've pushed callee-saved registers)
-    // This is where we want to return to after a VM-exit
-    mov     rax, rsp
     
-    // Write it to VMCS HOST_RSP field
-    mov     rbx, HOST_RSP
-    vmwrite rbx, rax
+    // Save parameters
+    push    rdx              // launched flag
+    push    rcx              // GuestRegisters pointer
+    
+    // CRITICAL FIX: DO NOT set HOST_RSP/HOST_RIP here!
+    // These must be set once during VMCS setup, not on every launch/resume.
+    
+    // Get GuestRegisters pointer
+    mov     rcx, [rsp]
+    
+    // Load ALL guest registers from GuestRegisters struct
+    mov     rax, [rcx + {rax_off}]
+    mov     rbx, [rcx + {rbx_off}]
+    mov     rdx, [rcx + {rdx_off}]
+    mov     rbp, [rcx + {rbp_off}]
+    mov     rsi, [rcx + {rsi_off}]
+    mov     rdi, [rcx + {rdi_off}]
+    mov     r8,  [rcx + {r8_off}]
+    mov     r9,  [rcx + {r9_off}]
+    mov     r10, [rcx + {r10_off}]
+    mov     r11, [rcx + {r11_off}]
+    mov     r12, [rcx + {r12_off}]
+    mov     r13, [rcx + {r13_off}]
+    mov     r14, [rcx + {r14_off}]
+    mov     r15, [rcx + {r15_off}]
+    
+    // Load RCX last (destroys pointer)
+    mov     rcx, [rcx + {rcx_off}]
+    
+    // Check launched flag on stack [rsp + 8]
+    cmp     qword ptr [rsp + 8], 0
+    jnz     do_resume
 
-    // NOTE:
-    // For now we don't synchronize GuestRegisters <-> CPU GPRs here.
-    // VM entry/exit uses VMCS-managed control state, and our Rust code
-    // reads/writes VMCS guest fields directly (RIP/RSP/RFLAGS, etc.).
-    // This stub's job is just:
-    //   - Set Host RSP in VMCS
-    //   - Pick VMLAUNCH vs VMRESUME
-    //   - Execute it
-    //   - Return the resulting RFLAGS so vm_succeed() can decode errors
-
-    // Decide between VMLAUNCH / VMRESUME based on `launched`.
-    test    rdx, rdx
-    jnz     1f
-
-    // First time: VMLAUNCH
+do_launch:
     vmlaunch
-    jmp     2f
+    jmp     launch_fail
 
-1:
-    // Subsequent entries: VMRESUME
+do_resume:
     vmresume
+    jmp     launch_fail
 
-2:
-    // On return from the VMX instruction (success or VMfail),
-    // grab the current RFLAGS and hand them back in RAX.
-    pushfq
-    pop     rax
-
-    // Restore callee-saved registers.
+vmexit_asm_handler:
+    // Stack: [GuestRegisters*] [launched_flag] [r15] [r14] [r13] [r12] [rsi] [rdi] [rbp] [rbx] [return_addr]
+    
+    // Save guest RCX temporarily
+    push    rcx
+    
+    // Get GuestRegisters pointer (it's at [rsp + 8] now)
+    mov     rcx, [rsp + 8]
+    
+    // Save all guest GPRs
+    mov     [rcx + {rax_off}], rax
+    mov     [rcx + {rbx_off}], rbx
+    // Save the pushed RCX value
+    mov     rax, [rsp]
+    mov     [rcx + {rcx_off}], rax
+    mov     [rcx + {rdx_off}], rdx
+    mov     [rcx + {rbp_off}], rbp
+    mov     [rcx + {rsi_off}], rsi
+    mov     [rcx + {rdi_off}], rdi
+    mov     [rcx + {r8_off}],  r8
+    mov     [rcx + {r9_off}],  r9
+    mov     [rcx + {r10_off}], r10
+    mov     [rcx + {r11_off}], r11
+    mov     [rcx + {r12_off}], r12
+    mov     [rcx + {r13_off}], r13
+    mov     [rcx + {r14_off}], r14
+    mov     [rcx + {r15_off}], r15
+    
+    // Clean up stack: remove guest RCX, GuestRegisters pointer, and launched flag
+    add     rsp, 24
+    
+    // Return success (0)
+    xor     rax, rax
+    
+    // Restore callee-saved registers
     pop     r15
     pop     r14
     pop     r13
@@ -95,54 +117,71 @@ launch_vm:
     pop     rdi
     pop     rbp
     pop     rbx
-
     ret
 
-    /* Keep these offsets wired up for tooling/consistency; they aren't
-       used in this stub but mirror the capture stub layout.
+launch_fail:
+    // Stack: [GuestRegisters*] [launched_flag] [r15] [r14] ... [rbx]
+    
+    // 1. Clean up stack arguments (GuestRegisters pointer and launched flag)
+    add     rsp, 16
+    
+    // 2. Prepare Argument 1 (RCX) = RFLAGS
+    pushfq
+    pop     rcx
+    
+    // 3. Prepare Argument 2 (RDX) = Error Code (Default 0)
+    xor     rdx, rdx
+    
+    // 4. Check ZF (Bit 6) -> VMfailValid
+    test    cl, 0x40        // Test ZF
+    jz      check_cf
+    
+    // ZF is set: Read VM-Instruction Error Field (Encoding 0x4400)
+    mov     rax, 0x4400
+    vmread  rdx, rax
+    jmp     call_handler
 
-       {registers_rax} {registers_rbx} {registers_rcx} {registers_rdx}
-       {registers_rsi} {registers_rdi} {registers_rbp} {registers_rsp}
-       {registers_r8} {registers_r9} {registers_r10} {registers_r11}
-       {registers_r12} {registers_r13} {registers_r14} {registers_r15}
-       {registers_rip} {registers_rflags}
-       {registers_xmm0} {registers_xmm1} {registers_xmm2} {registers_xmm3}
-       {registers_xmm4} {registers_xmm5} {registers_xmm6} {registers_xmm7}
-       {registers_xmm8} {registers_xmm9} {registers_xmm10} {registers_xmm11}
-       {registers_xmm12} {registers_xmm13} {registers_xmm14} {registers_xmm15} */
+check_cf:
+    // 5. Check CF (Bit 0) -> VMfailInvalid
+    test    cl, 0x01        // Test CF
+    jz      call_handler    // Should not happen if we are here, but fail safe
+    
+    // CF is set: Invalid VMCS pointer or corruption
+    mov     rdx, 0xFFFF     // 0xFFFF indicates VMfailInvalid
+
+call_handler:
+    // 6. Call Rust handler: vmlaunch_failed(rflags, error_code)
+    // Allocate shadow space (32 bytes) for Microsoft x64 ABI
+    sub     rsp, 32
+    call    vmlaunch_failed
+    add     rsp, 32
+    
+    // 7. Restore registers and return (Though the handler should panic)
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rsi
+    pop     rdi
+    pop     rbp
+    pop     rbx
+    ret
+    
+    .att_syntax prefix
 "#,
-    registers_rax = const mem::offset_of!(GuestRegisters, rax),
-    registers_rbx = const mem::offset_of!(GuestRegisters, rbx),
-    registers_rcx = const mem::offset_of!(GuestRegisters, rcx),
-    registers_rdx = const mem::offset_of!(GuestRegisters, rdx),
-    registers_rsi = const mem::offset_of!(GuestRegisters, rsi),
-    registers_rdi = const mem::offset_of!(GuestRegisters, rdi),
-    registers_rbp = const mem::offset_of!(GuestRegisters, rbp),
-    registers_rsp = const mem::offset_of!(GuestRegisters, rsp),
-    registers_r8  = const mem::offset_of!(GuestRegisters, r8),
-    registers_r9  = const mem::offset_of!(GuestRegisters, r9),
-    registers_r10 = const mem::offset_of!(GuestRegisters, r10),
-    registers_r11 = const mem::offset_of!(GuestRegisters, r11),
-    registers_r12 = const mem::offset_of!(GuestRegisters, r12),
-    registers_r13 = const mem::offset_of!(GuestRegisters, r13),
-    registers_r14 = const mem::offset_of!(GuestRegisters, r14),
-    registers_r15 = const mem::offset_of!(GuestRegisters, r15),
-    registers_rip = const mem::offset_of!(GuestRegisters, rip),
-    registers_rflags = const mem::offset_of!(GuestRegisters, rflags),
-    registers_xmm0 = const mem::offset_of!(GuestRegisters, xmm0),
-    registers_xmm1 = const mem::offset_of!(GuestRegisters, xmm1),
-    registers_xmm2 = const mem::offset_of!(GuestRegisters, xmm2),
-    registers_xmm3 = const mem::offset_of!(GuestRegisters, xmm3),
-    registers_xmm4 = const mem::offset_of!(GuestRegisters, xmm4),
-    registers_xmm5 = const mem::offset_of!(GuestRegisters, xmm5),
-    registers_xmm6 = const mem::offset_of!(GuestRegisters, xmm6),
-    registers_xmm7 = const mem::offset_of!(GuestRegisters, xmm7),
-    registers_xmm8 = const mem::offset_of!(GuestRegisters, xmm8),
-    registers_xmm9 = const mem::offset_of!(GuestRegisters, xmm9),
-    registers_xmm10 = const mem::offset_of!(GuestRegisters, xmm10),
-    registers_xmm11 = const mem::offset_of!(GuestRegisters, xmm11),
-    registers_xmm12 = const mem::offset_of!(GuestRegisters, xmm12),
-    registers_xmm13 = const mem::offset_of!(GuestRegisters, xmm13),
-    registers_xmm14 = const mem::offset_of!(GuestRegisters, xmm14),
-    registers_xmm15 = const mem::offset_of!(GuestRegisters, xmm15),
+    rax_off = const mem::offset_of!(GuestRegisters, rax),
+    rbx_off = const mem::offset_of!(GuestRegisters, rbx),
+    rcx_off = const mem::offset_of!(GuestRegisters, rcx),
+    rdx_off = const mem::offset_of!(GuestRegisters, rdx),
+    rsi_off = const mem::offset_of!(GuestRegisters, rsi),
+    rdi_off = const mem::offset_of!(GuestRegisters, rdi),
+    rbp_off = const mem::offset_of!(GuestRegisters, rbp),
+    r8_off  = const mem::offset_of!(GuestRegisters, r8),
+    r9_off  = const mem::offset_of!(GuestRegisters, r9),
+    r10_off = const mem::offset_of!(GuestRegisters, r10),
+    r11_off = const mem::offset_of!(GuestRegisters, r11),
+    r12_off = const mem::offset_of!(GuestRegisters, r12),
+    r13_off = const mem::offset_of!(GuestRegisters, r13),
+    r14_off = const mem::offset_of!(GuestRegisters, r14),
+    r15_off = const mem::offset_of!(GuestRegisters, r15),
 );

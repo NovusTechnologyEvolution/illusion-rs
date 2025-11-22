@@ -213,6 +213,91 @@ impl PageTables {
 #[derive(Debug, Clone, Copy)]
 pub struct Pml4(Table);
 
+/// Converts a virtual address to a physical address using CR3.
+/// Performs a page table walk to find the physical address.
+///
+/// # Safety
+/// This function is unsafe because it involves raw memory access and assumes
+/// the current CR3 contains valid page tables.
+///
+/// # Arguments
+/// * `virt_addr` - The virtual address to translate
+///
+/// # Returns
+/// The physical address corresponding to the virtual address, or the original
+/// virtual address if translation fails (assuming identity mapping).
+pub unsafe fn virtual_to_physical(virt_addr: u64) -> u64 {
+    // Read CR3 to get the page table base
+    let cr3: u64;
+    core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+
+    const BASE_PAGE_SHIFT: u64 = 12;
+
+    // Extract indices from virtual address
+    let pml4_index = (virt_addr >> 39) & 0x1FF;
+    let pdpt_index = (virt_addr >> 30) & 0x1FF;
+    let pd_index = (virt_addr >> 21) & 0x1FF;
+    let pt_index = (virt_addr >> 12) & 0x1FF;
+
+    // PML4 entry
+    let pml4_base = (cr3 >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
+    let pml4_table = pml4_base as *const u64;
+    let pml4_entry = *pml4_table.add(pml4_index as usize);
+
+    if (pml4_entry & 1) == 0 {
+        error!("PML4 entry not present for vaddr {:#x}", virt_addr);
+        return virt_addr; // Fallback to identity mapping assumption
+    }
+
+    // PDPT entry
+    let pdpt_base = (pml4_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
+    let pdpt_table = pdpt_base as *const u64;
+    let pdpt_entry = *pdpt_table.add(pdpt_index as usize);
+
+    if (pdpt_entry & 1) == 0 {
+        error!("PDPT entry not present for vaddr {:#x}", virt_addr);
+        return virt_addr;
+    }
+
+    // Check if it's a 1GB page
+    if (pdpt_entry & (1 << 7)) != 0 {
+        let offset = virt_addr & 0x3FFF_FFFF; // 1GB offset (bits 0-29)
+        let phys_base = (pdpt_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
+        return phys_base + offset;
+    }
+
+    // PD entry
+    let pd_base = (pdpt_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
+    let pd_table = pd_base as *const u64;
+    let pd_entry = *pd_table.add(pd_index as usize);
+
+    if (pd_entry & 1) == 0 {
+        error!("PD entry not present for vaddr {:#x}", virt_addr);
+        return virt_addr;
+    }
+
+    // Check if it's a 2MB page
+    if (pd_entry & (1 << 7)) != 0 {
+        let offset = virt_addr & 0x1F_FFFF; // 2MB offset (bits 0-20)
+        let phys_base = (pd_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
+        return phys_base + offset;
+    }
+
+    // PT entry (4KB page)
+    let pt_base = (pd_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
+    let pt_table = pt_base as *const u64;
+    let pt_entry = *pt_table.add(pt_index as usize);
+
+    if (pt_entry & 1) == 0 {
+        error!("PT entry not present for vaddr {:#x}", virt_addr);
+        return virt_addr;
+    }
+
+    let offset = virt_addr & 0xFFF; // 4KB offset (bits 0-11)
+    let phys_base = (pt_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
+    phys_base + offset
+}
+
 /// Represents a Page-Directory-Pointer-Table Entry (PDPTE) that references a Page Directory.
 ///
 /// PDPTEs are part of the second level in the standard x86-64 paging hierarchy.

@@ -97,6 +97,8 @@ pub fn handle_cpuid(vm: &mut Vm) -> Result<ExitType, HypervisorError> {
     let leaf = vm.guest_registers.rax as u32;
     let sub_leaf = vm.guest_registers.rcx as u32;
 
+    trace!("CPUID: leaf={:#x}, sub_leaf={:#x}", leaf, sub_leaf);
+
     if vm.guest_registers.rax == PASSWORD {
         // Handle the guest command and update the CPUID result accordingly
         vm.guest_registers.rax = match handle_guest_commands(vm) {
@@ -108,7 +110,6 @@ pub fn handle_cpuid(vm: &mut Vm) -> Result<ExitType, HypervisorError> {
     } else {
         // Execute CPUID instruction on the host and retrieve the result
         let mut cpuid_result = cpuid!(leaf, sub_leaf);
-        trace!("CpuidLeaf: {:#x}", leaf);
 
         match leaf {
             leaf if leaf == CpuidLeaf::VendorInfo as u32 => {
@@ -186,7 +187,11 @@ pub fn handle_cpuid(vm: &mut Vm) -> Result<ExitType, HypervisorError> {
                 // cpuid_result.ecx = 0x00000000; // Reserved field set to zero.
                 // cpuid_result.edx = 0x00000000; // Reserved field set to zero.
             }
-            _ => trace!("CPUID leaf 0x{leaf:X}."),
+            _ => {
+                if leaf != 0 && leaf != 1 {
+                    trace!("CPUID leaf 0x{:X}.", leaf);
+                }
+            }
         }
 
         // Update the guest registers with the results

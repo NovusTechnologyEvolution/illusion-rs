@@ -1,9 +1,6 @@
 #![allow(static_mut_refs)]
 #![allow(unsafe_op_in_unsafe_fn)]
 //! This module provides a global allocator using a linked list heap allocation strategy.
-//! The allocator is initialized with a fixed-size memory pool and supports memory allocation,
-//! deallocation, and reallocation operations. The allocator tracks memory usage and provides
-//! debugging information.
 
 use {
     crate::global_const::TOTAL_HEAP_SIZE,
@@ -12,7 +9,7 @@ use {
         alloc::{GlobalAlloc, Layout},
         ptr,
     },
-    log::debug,
+    log::{debug, trace},
     spin::Mutex,
 };
 
@@ -31,7 +28,7 @@ static mut LIST_HEAP: Option<ListHeap<HEAP_SIZE>> = None;
 /// A global allocator that uses the custom linked list heap.
 pub struct GlobalAllocator;
 
-/// Old name used by the UEFI crate.
+/// Initializes the global allocator.
 pub fn heap_init() {
     init_allocator();
 }
@@ -50,13 +47,24 @@ pub struct ListHeap<const SIZE: usize> {
     free_list_head: *mut Link,
 }
 
+#[repr(C)]
+struct Link {
+    next: *mut Link,
+    size: isize, // Positive = free, Negative = allocated
+}
+
+impl Link {
+    const SIZE: usize = core::mem::size_of::<Link>();
+}
+
 impl<const SIZE: usize> ListHeap<SIZE> {
     pub fn new(memory: &mut [u8; SIZE]) -> Self {
         let heap_ptr = memory.as_mut_ptr();
         let free_list_head = heap_ptr as *mut Link;
         unsafe {
             (*free_list_head).next = ptr::null_mut();
-            (*free_list_head).size = SIZE as isize - Link::SIZE as isize;
+            // Entire heap is one big free block initially
+            (*free_list_head).size = (SIZE as isize) - (Link::SIZE as isize);
         }
 
         Self {
@@ -66,111 +74,72 @@ impl<const SIZE: usize> ListHeap<SIZE> {
         }
     }
 
-    pub fn reset(&mut self) {
-        unsafe {
-            let free_list_head = self.memory as *mut Link;
-            (*free_list_head).next = ptr::null_mut();
-            (*free_list_head).size = self.size as isize - Link::SIZE as isize;
-            self.free_list_head = free_list_head;
-        }
-    }
-
-    fn _debug(&self) {
-        unsafe {
-            let mut link = self.free_list_head;
-
-            let mut total_allocations = 0usize;
-            let mut total_allocation_size = 0usize;
-            let total_freespace = 0usize;
-            let mut max_freespace = 0usize;
-            let mut largest_allocation = 0usize;
-
-            while !link.is_null() {
-                total_allocations += 1;
-                let used = if (*link).size < 0 {
-                    let used = (-(*link).size) as usize;
-                    total_allocation_size += used;
-                    used
-                } else {
-                    let free_size = (*link).size as usize;
-                    max_freespace = max_freespace.max(free_size);
-                    0
-                };
-
-                largest_allocation = largest_allocation.max(used);
-
-                link = (*link).next;
-            }
-
-            total_allocations -= 1;
-
-            let wasted = (total_allocations + 2) * Link::SIZE;
-            debug!("Total Heap Size:                     0x{:X}", SIZE);
-            debug!("Space wasted on memory management:   0x{wasted:X} bytes");
-            debug!("Total memory allocated:              0x{total_allocation_size:X} bytes");
-            debug!("Total memory available:              0x{total_freespace:X} bytes");
-            debug!("Largest allocated buffer:            0x{largest_allocation:X} bytes");
-            debug!("Largest available buffer:            0x{max_freespace:X} bytes");
-            debug!("Total allocation count:              0x{total_allocations:X}");
-        }
-    }
-}
-
-#[repr(C, align(0x10))]
-struct Link {
-    next: *mut Link,
-    size: isize,
-}
-
-impl Link {
-    const SIZE: usize = core::mem::size_of::<Link>();
-}
-
-impl<const SIZE: usize> ListHeap<SIZE> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _guard = ALLOCATOR_MUTEX.lock();
 
-        let aligned_size = layout.size().max(core::mem::size_of::<usize>());
-        let required_size =
-            (aligned_size + (layout.align().max(core::mem::size_of::<usize>()) - 1)) & !(layout.align().max(core::mem::size_of::<usize>()) - 1);
+        // Ensure alignment for Link header (usually 8 bytes on x64)
+        let align = layout.align().max(core::mem::align_of::<Link>());
+        let size = layout.size().max(core::mem::size_of::<usize>());
 
-        let mut link = self.free_list_head;
+        let mut prev_link: *mut Link = ptr::null_mut();
+        let mut curr_link = self.free_list_head;
 
-        while !link.is_null() {
-            if (*link).size <= 0 {
-                link = (*link).next;
+        while !curr_link.is_null() {
+            // Skip allocated blocks (size < 0)
+            if (*curr_link).size < 0 {
+                prev_link = curr_link;
+                curr_link = (*curr_link).next;
                 continue;
             }
 
-            let start_of_free = link as usize + Link::SIZE;
-            let aligned_pointer = (start_of_free + (layout.align() - 1)) & !(layout.align() - 1);
-            let free_start = start_of_free;
-            let free_end = free_start + (*link).size as usize;
+            // Calculate address for payload
+            let curr_addr = curr_link as usize;
+            let payload_start = curr_addr + Link::SIZE;
 
-            if aligned_pointer + required_size <= free_end {
-                let remaining_size = free_end - (aligned_pointer + required_size);
+            // Calculate alignment padding needed
+            let aligned_payload_start = (payload_start + (align - 1)) & !(align - 1);
+            let padding = aligned_payload_start - payload_start;
 
-                let alloc_link = (aligned_pointer - Link::SIZE) as *mut Link;
-                (*alloc_link).next = (*link).next;
-                (*alloc_link).size = -(required_size as isize);
+            // Total size we need to carve out from this block
+            let total_needed = padding + size;
+            let available_size = (*curr_link).size as usize;
 
-                if remaining_size > Link::SIZE {
-                    let new_free_link = (aligned_pointer + required_size) as *mut Link;
-                    (*new_free_link).next = (*alloc_link).next;
-                    (*new_free_link).size = remaining_size as isize - Link::SIZE as isize;
-                    (*link).next = new_free_link;
-                } else {
-                    (*link).next = (*alloc_link).next;
+            if available_size >= total_needed {
+                // Found a suitable block!
+
+                // 1. Mark current block as allocated
+                // We use the requested size (plus padding) as the allocation size
+                (*curr_link).size = -(total_needed as isize);
+
+                // 2. Check if we can split the block
+                let remaining = available_size - total_needed;
+
+                // We need space for a new Link header + at least 1 byte of data
+                if remaining > Link::SIZE {
+                    // Calculate address for the new free block header
+                    // It starts immediately after the allocated payload
+                    let next_link_addr = aligned_payload_start + size;
+                    let new_free_link = next_link_addr as *mut Link;
+
+                    // Initialize the new free block
+                    (*new_free_link).size = (remaining as isize) - (Link::SIZE as isize);
+                    (*new_free_link).next = (*curr_link).next;
+
+                    // Link current block to the new free block
+                    (*curr_link).next = new_free_link;
                 }
 
-                return aligned_pointer as *mut _;
+                // Return the aligned payload pointer
+                return aligned_payload_start as *mut u8;
             }
 
-            link = (*link).next;
+            prev_link = curr_link;
+            curr_link = (*curr_link).next;
         }
 
-        self._debug();
-        core::ptr::null_mut()
+        // Out of memory
+        trace!("Allocator: OOM");
+        ptr::null_mut()
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
@@ -179,42 +148,38 @@ impl<const SIZE: usize> ListHeap<SIZE> {
         }
         let _guard = ALLOCATOR_MUTEX.lock();
 
-        let link = (ptr as usize - Link::SIZE) as *mut Link;
-        (*link).size = -(*link).size;
+        // We need to find the Link header associated with this pointer.
+        // Because of alignment padding, the header is not necessarily exactly `Link::SIZE` bytes behind `ptr`.
+        // We must walk the list to find the block that *contains* `ptr`.
 
         let mut curr = self.free_list_head;
         while !curr.is_null() {
-            if curr != link && (*curr).next == link {
-                if (*link).next == (*curr).next {
-                    (*curr).size += (*link).size + Link::SIZE as isize;
-                    (*curr).next = (*link).next;
+            let data_start = (curr as usize) + Link::SIZE;
+
+            // If allocated (size < 0)
+            if (*curr).size < 0 {
+                let alloc_size = (-(*curr).size) as usize;
+                let data_end = data_start + alloc_size;
+
+                // Check if ptr falls within this block's data region
+                // (It will be >= data_start because of potential padding)
+                if (ptr as usize) >= data_start && (ptr as usize) < data_end {
+                    // Found it. Mark as free.
+                    (*curr).size = -(*curr).size;
+                    // Simple implementation: we don't coalesce here to keep it robust for now.
+                    // Since we only allocate once at startup, fragmentation isn't a huge issue.
+                    return;
                 }
-                break;
             }
             curr = (*curr).next;
         }
     }
 
-    #[allow(dead_code)]
-    fn first_link_pos(&self) -> isize {
-        self.free_list_head as isize - self.memory as isize
-    }
-}
-
-unsafe impl<const SIZE: usize> GlobalAlloc for ListHeap<SIZE> {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.alloc(layout)
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.dealloc(ptr, layout)
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
-        let new_ptr = self.alloc(Layout::from_size_align_unchecked(new_size, old_layout.align()));
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let new_ptr = self.alloc(Layout::from_size_align_unchecked(new_size, layout.align()));
         if !new_ptr.is_null() {
-            ptr::copy_nonoverlapping(ptr, new_ptr, core::cmp::min(old_layout.size(), new_size));
-            self.dealloc(ptr, old_layout);
+            ptr::copy_nonoverlapping(ptr, new_ptr, core::cmp::min(layout.size(), new_size));
+            self.dealloc(ptr, layout);
         }
         new_ptr
     }

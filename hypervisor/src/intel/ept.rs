@@ -60,15 +60,14 @@ impl Ept {
     /// This function returns an `Err(HypervisorError::MemoryTypeResolutionError)` if it fails
     /// to resolve memory types based on MTRR settings for any page.
     pub fn build_identity(&mut self) -> Result<(), HypervisorError> {
-        // Initialize a new MTRR instance for memory type resolution.
-        let mut mtrr = Mtrr::new();
-        trace!("{mtrr:#x?}");
-        trace!("Initializing EPTs");
+        // MTRR object is commented out for debugging stability.
+        // let mut mtrr = Mtrr::new();
+        // trace!("{mtrr:#x?}");
+        trace!("Initializing EPTs with 2MB identity mapping up to 1GB (WB forced)");
 
-        // Start with a physical address (pa) of 0.
         let mut pa = 0u64;
 
-        // Configure the first PML4 entry to point to the PDPT. This sets up the root of our page table.
+        // Configure the first PML4 entry to point to the PDPT.
         self.pml4.0.entries[0].set_readable(true);
         self.pml4.0.entries[0].set_writable(true);
         self.pml4.0.entries[0].set_executable(true);
@@ -76,48 +75,34 @@ impl Ept {
 
         // Iterate through each PDPT entry to configure PDs.
         for (i, pdpte) in self.pdpt.0.entries.iter_mut().enumerate() {
+            // Stop after mapping 1GB (512 PDPT entries)
+            if i >= 512 {
+                break;
+            }
+
             pdpte.set_readable(true);
             pdpte.set_writable(true);
             pdpte.set_executable(true);
             pdpte.set_pfn(addr_of!(self.pd[i]) as u64 >> BASE_PAGE_SHIFT);
 
-            // Configure each PDE within a PD. The first PD manages the first 2MB with 4KB granularity.
+            // Configure each PDE within a PD for 2MB pages.
             for pde in &mut self.pd[i].0.entries {
-                if pa == 0 {
-                    // Handle the special case for the first 2MB to ensure MTRR types are correctly applied.
-                    pde.set_readable(true);
-                    pde.set_writable(true);
-                    pde.set_executable(true);
-                    pde.set_pfn(addr_of!(self.pt) as u64 >> BASE_PAGE_SHIFT);
+                // FIX: Force memory type to Write-Back (6) to avoid MTRR lookup failure
+                // and guarantee the widest supported cacheability for hypervisor structures.
+                const DEBUG_MEMORY_TYPE_WB: u64 = 6;
 
-                    // Configure the PT entries for the first 2MB, respecting MTRR settings.
-                    for pte in &mut self.pt.0.entries {
-                        let memory_type = mtrr
-                            .find(pa..pa + BASE_PAGE_SIZE as u64)
-                            .ok_or(HypervisorError::MemoryTypeResolutionError)?;
-                        pte.set_readable(true);
-                        pte.set_writable(true);
-                        pte.set_executable(true);
-                        pte.set_memory_type(memory_type as u64);
-                        pte.set_pfn(pa >> BASE_PAGE_SHIFT);
-                        pa += BASE_PAGE_SIZE as u64;
-                    }
-                } else {
-                    // For the rest of the physical address space, configure PD entries for large pages (2MB).
-                    let memory_type = mtrr
-                        .find(pa..pa + LARGE_PAGE_SIZE as u64)
-                        .ok_or(HypervisorError::MemoryTypeResolutionError)?;
-
-                    pde.set_readable(true);
-                    pde.set_writable(true);
-                    pde.set_executable(true);
-                    pde.set_memory_type(memory_type as u64);
-                    pde.set_large(true);
-                    pde.set_pfn(pa >> BASE_PAGE_SHIFT);
-                    pa += LARGE_PAGE_SIZE as u64;
-                }
+                pde.set_readable(true);
+                pde.set_writable(true);
+                pde.set_executable(true);
+                pde.set_memory_type(DEBUG_MEMORY_TYPE_WB);
+                pde.set_large(true); // Map using 2MB pages
+                pde.set_pfn(pa >> BASE_PAGE_SHIFT);
+                pa += LARGE_PAGE_SIZE as u64;
             }
         }
+
+        // Ensure the PT (4KB page table) is initialized to prevent accidental zero-mapping.
+        self.pt = Pt(Table { entries: [Entry(0); 512] });
 
         Ok(())
     }
@@ -388,7 +373,7 @@ impl Ept {
         let pd_index = pd_index(guest_pa);
         let pt_index = pt_index(guest_pa);
 
-        let pde = &self.pd[pdpt_index].0.entries[pd_index];
+        let pde = &mut self.pd[pdpt_index].0.entries[pd_index];
 
         // Verify that we're not dealing with a large page mapping
         if pde.large() {

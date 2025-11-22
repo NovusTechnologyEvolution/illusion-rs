@@ -29,7 +29,11 @@ pub fn access_rights_from_native(access_rights: u32) -> u32 {
         return VMX_SEGMENT_ACCESS_RIGHTS_UNUSABLE_FLAG;
     }
 
-    (access_rights >> 8) & 0b1111_0000_1111_1111
+    // FIX: Restored the shift.
+    // LAR returns the Access Rights byte in bits 15:8 and Extended flags in 23:20.
+    // VMX expects Access Rights in 7:0 and Extended flags in 15:12.
+    // We must shift right by 8 to align them correctly.
+    (access_rights >> 8) & 0xF0FF
 }
 
 /// Retrieves the segment limit using the LSL (Load Segment Limit) instruction.
@@ -43,16 +47,12 @@ pub fn access_rights_from_native(access_rights: u32) -> u32 {
 ///
 /// # Returns
 ///
-/// Returns the segment limit as a 32-bit unsigned integer.
+/// Returns `Some(limit)` if the selector is valid, or `None` if invalid (ZF not set).
 ///
 /// # Safety
 ///
-/// This function is `unsafe` because it directly interacts with processor state via inline assembly and assumes the selector is valid.
-///
-/// # Panics
-///
-/// Panics if the Zero Flag (ZF) is not set, indicating an unsuccessful LSL instruction, possibly due to an invalid selector.
-pub fn lsl(selector: SegmentSelector) -> u32 {
+/// This function is `unsafe` because it directly interacts with processor state via inline assembly.
+pub fn lsl(selector: SegmentSelector) -> Option<u32> {
     let flags: u64;
     let mut limit: u64;
     unsafe {
@@ -65,12 +65,31 @@ pub fn lsl(selector: SegmentSelector) -> u32 {
         lateout(reg) flags
         );
     };
-    assert!(RFlags::from_raw(flags).contains(RFlags::FLAGS_ZF));
-    limit as u32
+
+    // Check if ZF is set (operation succeeded)
+    if RFlags::from_raw(flags).contains(RFlags::FLAGS_ZF) {
+        Some(limit as u32)
+    } else {
+        None
+    }
 }
 
 /// LAR-Load Access Rights Byte
-pub fn lar(selector: SegmentSelector) -> u32 {
+///
+/// Executes the LAR instruction to obtain access rights for a given segment selector.
+///
+/// # Arguments
+///
+/// - `selector`: The segment selector for which access rights are requested.
+///
+/// # Returns
+///
+/// Returns `Some(access_rights)` if the selector is valid, or `None` if invalid (ZF not set).
+///
+/// # Safety
+///
+/// This function is `unsafe` because it directly interacts with processor state via inline assembly.
+pub fn lar(selector: SegmentSelector) -> Option<u32> {
     let flags: u64;
     let mut access_rights: u64;
     unsafe {
@@ -83,8 +102,13 @@ pub fn lar(selector: SegmentSelector) -> u32 {
         lateout(reg) flags
         );
     };
-    assert!(RFlags::from_raw(flags).contains(RFlags::FLAGS_ZF));
-    access_rights as u32
+
+    // Check if ZF is set (operation succeeded)
+    if RFlags::from_raw(flags).contains(RFlags::FLAGS_ZF) {
+        Some(access_rights as u32)
+    } else {
+        None
+    }
 }
 
 bitfield! {

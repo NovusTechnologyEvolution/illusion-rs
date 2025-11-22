@@ -34,6 +34,7 @@ fn main() -> Status {
     heap_init();
 
     // initialize serial logger from hypervisor crate
+    // Change Debug to Info to hide the thousands of VM Exit logs
     logger::init(SerialPort::COM1, log::LevelFilter::Debug);
 
     info!("The Matrix is an illusion");
