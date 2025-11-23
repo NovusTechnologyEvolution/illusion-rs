@@ -244,4 +244,7 @@ pub enum HypervisorError {
 
     #[error("Guest page table unmapping error")]
     GuestPageUnmapError,
+
+    #[error("Invalid host state - CR3 points to empty page tables")]
+    InvalidHostState,
 }

@@ -1,115 +1,267 @@
 // hypervisor/src/intel/vmlaunch.rs
-//! VM launch stub for Intel VMX.
-//!
-//! Small assembly stub that actually executes VMLAUNCH/VMRESUME and returns
-//! the resulting RFLAGS so Rust code can check for VM-instruction success/failure.
+//! VM launch stub - WORKING VERSION without RIP-relative statics
 
 use {
     crate::intel::capture::GuestRegisters,
     core::{arch::global_asm, mem},
 };
 
-unsafe extern "efiapi" {
-    /// Tries to launch a VM using the state laid out in `registers`.
-    ///
-    /// `launched`:
-    ///   - 0 → first entry, use VMLAUNCH
-    ///   - 1 → subsequent entries, use VMRESUME
-    ///
-    /// Returns the CPU RFLAGS after executing the VMX instruction.
-    pub fn launch_vm(registers: &mut GuestRegisters, launched: u64) -> u64;
+unsafe extern "sysv64" {
+    pub fn launch_vm(registers: *mut GuestRegisters, launched: u64) -> u64;
 }
 
-/// Safe wrapper around the EFI/assembly VM-launch routine.
+unsafe extern "sysv64" {
+    pub fn vmexit_handler();
+}
+
 pub fn vmlaunch(registers: &mut GuestRegisters, launched: u64) -> u64 {
-    unsafe { launch_vm(registers, launched) }
+    unsafe {
+        log::debug!("vmlaunch: calling launch_vm with launched={}", launched);
+
+        // CRITICAL: Check and log RFLAGS before VMLAUNCH
+        let rflags: u64;
+        core::arch::asm!("pushfq; pop {}", out(reg) rflags);
+        log::debug!(
+            "RFLAGS before VMLAUNCH: {:#x} (IF={}, TF={})",
+            rflags,
+            (rflags & (1 << 9)) != 0, // Interrupt flag
+            (rflags & (1 << 8)) != 0  // Trap flag
+        );
+
+        let registers_ptr = registers as *mut GuestRegisters;
+        let result = launch_vm(registers_ptr, launched);
+        log::debug!("vmlaunch: launch_vm returned {:#x}", result);
+        result
+    }
 }
 
 global_asm!(
     r#"
     .globl launch_vm
+    .globl vmexit_handler
 
-    // VMCS field encodings
-    .set HOST_RSP, 0x00006C14
-
-    // Windows x64 / EFI calling convention:
-    //   RCX = &mut GuestRegisters
-    //   RDX = has_launched (0 = first entry -> VMLAUNCH, 1 = VMRESUME)
 launch_vm:
-    // Save callee-saved registers we might clobber in this stub.
-    push    rbx
-    push    rbp
+    // System V AMD64 ABI calling convention:
+    // RDI = first argument = &GuestRegisters (mut pointer)
+    // RSI = second argument = launched (u64)
+    
+    // Save RDI (GuestRegisters pointer) and RSI (launched flag) on stack
     push    rdi
     push    rsi
+    
+    // Save callee-saved registers
+    push    rbx
+    push    rbp
     push    r12
     push    r13
     push    r14
     push    r15
 
-    // CRITICAL: Set Host RSP in VMCS before VMLAUNCH/VMRESUME
-    // When a VM-exit occurs, the CPU will load RSP from VMCS HOST_RSP field.
-    // We want it to point to our current stack so we can return properly.
-    //
-    // Save the current RSP (after we've pushed callee-saved registers)
-    // This is where we want to return to after a VM-exit
-    mov     rax, rsp
+    // Retrieve the launched flag from stack
+    // Stack layout now (top to bottom):
+    // [rsp + 0]  = r15
+    // [rsp + 8]  = r14
+    // [rsp + 16] = r13
+    // [rsp + 24] = r12
+    // [rsp + 32] = rbp
+    // [rsp + 40] = rbx
+    // [rsp + 48] = rsi (launched flag)
+    // [rsp + 56] = rdi (GuestRegisters pointer)
+    mov     rcx, [rsp + 48]
     
-    // Write it to VMCS HOST_RSP field
-    mov     rbx, HOST_RSP
-    vmwrite rbx, rax
+    // Decide between VMLAUNCH / VMRESUME based on launched flag
+    test    rcx, rcx
+    jnz     .Lresume
 
-    // NOTE:
-    // For now we don't synchronize GuestRegisters <-> CPU GPRs here.
-    // VM entry/exit uses VMCS-managed control state, and our Rust code
-    // reads/writes VMCS guest fields directly (RIP/RSP/RFLAGS, etc.).
-    // This stub's job is just:
-    //   - Set Host RSP in VMCS
-    //   - Pick VMLAUNCH vs VMRESUME
-    //   - Execute it
-    //   - Return the resulting RFLAGS so vm_succeed() can decode errors
-
-    // Decide between VMLAUNCH / VMRESUME based on `launched`.
-    test    rdx, rdx
-    jnz     1f
-
-    // First time: VMLAUNCH
+.Llaunch:
+    // Get GuestRegisters pointer from stack
+    mov     r8, [rsp + 56]
+    
+    // Load guest general-purpose registers
+    mov     rax, [{registers_rax} + r8]
+    mov     rbx, [{registers_rbx} + r8]
+    mov     rcx, [{registers_rcx} + r8]
+    mov     rdx, [{registers_rdx} + r8]
+    mov     rsi, [{registers_rsi} + r8]
+    mov     rdi, [{registers_rdi} + r8]
+    mov     rbp, [{registers_rbp} + r8]
+    mov     r9,  [{registers_r9} + r8]
+    mov     r10, [{registers_r10} + r8]
+    mov     r11, [{registers_r11} + r8]
+    mov     r12, [{registers_r12} + r8]
+    mov     r13, [{registers_r13} + r8]
+    mov     r14, [{registers_r14} + r8]
+    mov     r15, [{registers_r15} + r8]
+    
+    // Load r8 last since we were using it as base pointer
+    mov     r8,  [{registers_r8} + r8]
+    
+    // CRITICAL: About to execute VMLAUNCH
+    // If this hangs, we never reach vmexit_handler OR .Lfailed
     vmlaunch
-    jmp     2f
+    
+    // If we get here, VMLAUNCH failed
+    jmp     .Lfailed
 
-1:
-    // Subsequent entries: VMRESUME
+.Lresume:
+    // Load guest registers for VMRESUME
+    mov     r8, [rsp + 56]  // Get GuestRegisters pointer
+    
+    mov     rax, [{registers_rax} + r8]
+    mov     rbx, [{registers_rbx} + r8]
+    mov     rcx, [{registers_rcx} + r8]
+    mov     rdx, [{registers_rdx} + r8]
+    mov     rsi, [{registers_rsi} + r8]
+    mov     rdi, [{registers_rdi} + r8]
+    mov     rbp, [{registers_rbp} + r8]
+    mov     r9,  [{registers_r9} + r8]
+    mov     r10, [{registers_r10} + r8]
+    mov     r11, [{registers_r11} + r8]
+    mov     r12, [{registers_r12} + r8]
+    mov     r13, [{registers_r13} + r8]
+    mov     r14, [{registers_r14} + r8]
+    mov     r15, [{registers_r15} + r8]
+    mov     r8,  [{registers_r8} + r8]
+    
     vmresume
+    
+    // If we get here, VMRESUME failed
+    jmp     .Lfailed
 
-2:
-    // On return from the VMX instruction (success or VMfail),
-    // grab the current RFLAGS and hand them back in RAX.
+.Lfailed:
+    // VM-entry failed - return RFLAGS in RAX
     pushfq
     pop     rax
 
-    // Restore callee-saved registers.
+    // Restore stack and callee-saved registers
     pop     r15
     pop     r14
     pop     r13
     pop     r12
-    pop     rsi
-    pop     rdi
     pop     rbp
     pop     rbx
+    pop     rsi     // Discard saved launched flag
+    pop     rdi     // Discard saved GuestRegisters pointer
 
     ret
 
-    /* Keep these offsets wired up for tooling/consistency; they aren't
-       used in this stub but mirror the capture stub layout.
-
-       {registers_rax} {registers_rbx} {registers_rcx} {registers_rdx}
-       {registers_rsi} {registers_rdi} {registers_rbp} {registers_rsp}
-       {registers_r8} {registers_r9} {registers_r10} {registers_r11}
-       {registers_r12} {registers_r13} {registers_r14} {registers_r15}
-       {registers_rip} {registers_rflags}
-       {registers_xmm0} {registers_xmm1} {registers_xmm2} {registers_xmm3}
-       {registers_xmm4} {registers_xmm5} {registers_xmm6} {registers_xmm7}
-       {registers_xmm8} {registers_xmm9} {registers_xmm10} {registers_xmm11}
-       {registers_xmm12} {registers_xmm13} {registers_xmm14} {registers_xmm15} */
+vmexit_handler:
+    // EMERGENCY DEBUG: Write to serial port to prove we entered vmexit_handler
+    // This runs BEFORE anything else can fail
+    push    rax
+    push    rdx
+    mov     dx, 0x3F8       // COM1 data port
+    mov     al, 0x56        // 'V' - VM-exit handler reached!
+    out     dx, al
+    mov     al, 0x45        // 'E'
+    out     dx, al
+    mov     al, 0x58        // 'X'
+    out     dx, al
+    mov     al, 0x21        // '!'
+    out     dx, al
+    pop     rdx
+    pop     rax
+    
+    // CRITICAL: At this point, RSP has been loaded from HOST_RSP in VMCS
+    // HOST_RSP points to the stack AFTER the 8 register pushes in launch_vm
+    
+    // Stack layout when we enter here:
+    // [HOST_RSP + 0]  = r15 (from launch_vm)
+    // [HOST_RSP + 8]  = r14
+    // [HOST_RSP + 16] = r13
+    // [HOST_RSP + 24] = r12
+    // [HOST_RSP + 32] = rbp
+    // [HOST_RSP + 40] = rbx
+    // [HOST_RSP + 48] = rsi (launched flag)
+    // [HOST_RSP + 56] = rdi (GuestRegisters pointer)
+    // [HOST_RSP + 64] = return address (from call to launch_vm)
+    
+    // Save all guest registers to temporary stack locations
+    push    rax
+    push    rbx
+    push    rcx
+    push    rdx
+    push    rsi
+    push    rdi
+    push    rbp
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    
+    // Get GuestRegisters pointer from the saved launch_vm stack
+    // After we pushed 15 registers (15*8 = 120 bytes), the pointer is at:
+    // [rsp + 120 + 56] = [rsp + 176]
+    mov     r8, [rsp + 176]
+    
+    // Save guest registers back to struct
+    // Note: we need to read from our temp stack
+    mov     rax, [rsp + 14*8]   // Get saved rax
+    mov     [{registers_rax} + r8], rax
+    
+    mov     rax, [rsp + 13*8]   // Get saved rbx
+    mov     [{registers_rbx} + r8], rax
+    
+    mov     rax, [rsp + 12*8]   // Get saved rcx
+    mov     [{registers_rcx} + r8], rax
+    
+    mov     rax, [rsp + 11*8]   // Get saved rdx
+    mov     [{registers_rdx} + r8], rax
+    
+    mov     rax, [rsp + 10*8]   // Get saved rsi
+    mov     [{registers_rsi} + r8], rax
+    
+    mov     rax, [rsp + 9*8]    // Get saved rdi
+    mov     [{registers_rdi} + r8], rax
+    
+    mov     rax, [rsp + 8*8]    // Get saved rbp
+    mov     [{registers_rbp} + r8], rax
+    
+    mov     rax, [rsp + 7*8]    // Get saved r8
+    mov     [{registers_r8} + r8], rax
+    
+    mov     rax, [rsp + 6*8]    // Get saved r9
+    mov     [{registers_r9} + r8], rax
+    
+    mov     rax, [rsp + 5*8]    // Get saved r10
+    mov     [{registers_r10} + r8], rax
+    
+    mov     rax, [rsp + 4*8]    // Get saved r11
+    mov     [{registers_r11} + r8], rax
+    
+    mov     rax, [rsp + 3*8]    // Get saved r12
+    mov     [{registers_r12} + r8], rax
+    
+    mov     rax, [rsp + 2*8]    // Get saved r13
+    mov     [{registers_r13} + r8], rax
+    
+    mov     rax, [rsp + 1*8]    // Get saved r14
+    mov     [{registers_r14} + r8], rax
+    
+    mov     rax, [rsp + 0*8]    // Get saved r15
+    mov     [{registers_r15} + r8], rax
+    
+    // Restore our working registers
+    add     rsp, 15*8   // Pop all saved guest registers
+    
+    // Set RAX=0 (success - RFLAGS with no error flags)
+    xor     rax, rax
+    
+    // Restore callee-saved registers and return (in reverse order)
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    pop     rsi     // Discard saved launched flag
+    pop     rdi     // Discard saved GuestRegisters pointer
+    
+    ret
 "#,
     registers_rax = const mem::offset_of!(GuestRegisters, rax),
     registers_rbx = const mem::offset_of!(GuestRegisters, rbx),
@@ -118,7 +270,6 @@ launch_vm:
     registers_rsi = const mem::offset_of!(GuestRegisters, rsi),
     registers_rdi = const mem::offset_of!(GuestRegisters, rdi),
     registers_rbp = const mem::offset_of!(GuestRegisters, rbp),
-    registers_rsp = const mem::offset_of!(GuestRegisters, rsp),
     registers_r8  = const mem::offset_of!(GuestRegisters, r8),
     registers_r9  = const mem::offset_of!(GuestRegisters, r9),
     registers_r10 = const mem::offset_of!(GuestRegisters, r10),
@@ -127,22 +278,4 @@ launch_vm:
     registers_r13 = const mem::offset_of!(GuestRegisters, r13),
     registers_r14 = const mem::offset_of!(GuestRegisters, r14),
     registers_r15 = const mem::offset_of!(GuestRegisters, r15),
-    registers_rip = const mem::offset_of!(GuestRegisters, rip),
-    registers_rflags = const mem::offset_of!(GuestRegisters, rflags),
-    registers_xmm0 = const mem::offset_of!(GuestRegisters, xmm0),
-    registers_xmm1 = const mem::offset_of!(GuestRegisters, xmm1),
-    registers_xmm2 = const mem::offset_of!(GuestRegisters, xmm2),
-    registers_xmm3 = const mem::offset_of!(GuestRegisters, xmm3),
-    registers_xmm4 = const mem::offset_of!(GuestRegisters, xmm4),
-    registers_xmm5 = const mem::offset_of!(GuestRegisters, xmm5),
-    registers_xmm6 = const mem::offset_of!(GuestRegisters, xmm6),
-    registers_xmm7 = const mem::offset_of!(GuestRegisters, xmm7),
-    registers_xmm8 = const mem::offset_of!(GuestRegisters, xmm8),
-    registers_xmm9 = const mem::offset_of!(GuestRegisters, xmm9),
-    registers_xmm10 = const mem::offset_of!(GuestRegisters, xmm10),
-    registers_xmm11 = const mem::offset_of!(GuestRegisters, xmm11),
-    registers_xmm12 = const mem::offset_of!(GuestRegisters, xmm12),
-    registers_xmm13 = const mem::offset_of!(GuestRegisters, xmm13),
-    registers_xmm14 = const mem::offset_of!(GuestRegisters, xmm14),
-    registers_xmm15 = const mem::offset_of!(GuestRegisters, xmm15),
 );

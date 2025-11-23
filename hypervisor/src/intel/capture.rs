@@ -30,7 +30,7 @@ pub struct GuestRegisters {
     pub original_lstar: u64,
     pub hook_lstar: u64,
 
-    // XMM registers — other code uses offset_of! on these
+    // XMM registers – other code uses offset_of! on these
     pub xmm0: [u8; 16],
     pub xmm1: [u8; 16],
     pub xmm2: [u8; 16],
@@ -49,19 +49,26 @@ pub struct GuestRegisters {
     pub xmm15: [u8; 16],
 }
 
-// declare the symbol implemented by the asm below
+// declare the symbols implemented by the asm below
 unsafe extern "efiapi" {
     /// Captures the current CPU state into `GuestRegisters`.
     ///
     /// Returns `false` on initial entry (processor not yet virtualized). The
-    /// “already virtualized” state is communicated via `guest_registers.rax`
+    /// "already virtualized" state is communicated via `guest_registers.rax`
     /// after the hypervisor has run and sets it to 1 before returning.
     pub fn capture_registers(registers: &mut GuestRegisters) -> bool;
+}
+
+unsafe extern "C" {
+    /// The address where the guest will resume execution after VM-exit.
+    /// This is defined elsewhere in the codebase (likely in vmm.rs or another module).
+    pub fn resume_from_virtualization();
 }
 
 global_asm!(
     r#"
     .globl capture_registers
+
 capture_registers:
     // RCX = &mut GuestRegisters (EFI/Win64 calling convention)
 

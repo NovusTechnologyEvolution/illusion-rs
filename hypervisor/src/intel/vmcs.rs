@@ -13,8 +13,7 @@ use {
             descriptor::Descriptors,
             invept::invept_single_context,
             invvpid::{VPID_TAG, invvpid_single_context},
-            segmentation::{access_rights_from_native, lar, lsl},
-            support::{cr3, rdmsr, sidt, vmread, vmwrite},
+            support::{rdmsr, sidt, vmread, vmwrite},
         },
     },
     bit_field::BitField,
@@ -23,7 +22,6 @@ use {
         bits64::{paging::BASE_PAGE_SIZE, rflags},
         debugregs::dr7,
         msr,
-        segmentation::{cs, ds, es, fs, gs, ss},
         vmx::vmcs,
     },
     x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags},
@@ -58,31 +56,92 @@ impl Vmcs {
     /// # Arguments
     /// * `guest_descriptor` - Descriptor tables for the guest.
     /// * `guest_registers` - Guest registers for the guest.
-    /// * `host_cr3` - The host's CR3 value (PML4 physical address) to use for guest
-    pub fn setup_guest_registers_state(guest_descriptor: &Descriptors, guest_registers: &GuestRegisters, host_cr3: u64) {
+    /// * `_host_cr3` - UNUSED - we use actual current CR3 instead
+    pub fn setup_guest_registers_state(guest_descriptor: &Descriptors, guest_registers: &GuestRegisters, _host_cr3: u64) {
         log::debug!("Setting up Guest Registers State");
 
         // ---------------------------------------------------------------------
         // Control registers: CR0 / CR3 / CR4
         // ---------------------------------------------------------------------
         //
-        // TEMPORARY DEBUG: Try 32-bit protected mode instead of 64-bit
-        // to rule out long-mode-specific issues
-        let mut guest_cr0 = Cr0::read_raw();
-        guest_cr0 &= !Cr0Flags::PAGING.bits(); // Disable PG bit
-        guest_cr0 &= !Cr0Flags::WRITE_PROTECT.bits(); // Disable WP bit
+        // CRITICAL: Apply VMX fixed bits to ensure VMCS consistency checks pass
+        let vmx_cr0_fixed0 = rdmsr(msr::IA32_VMX_CR0_FIXED0);
+        let vmx_cr0_fixed1 = rdmsr(msr::IA32_VMX_CR0_FIXED1);
 
-        let guest_cr3 = 0u64; // CR3 not used when paging is disabled
+        // Start with current CR0 and apply 64-bit requirements
+        let mut guest_cr0 = Cr0::read_raw();
+        guest_cr0 |= Cr0Flags::PROTECTED_MODE_ENABLE.bits(); // PE = 1 (required for long mode)
+        guest_cr0 |= Cr0Flags::PAGING.bits(); // PG = 1 (required for long mode)
+        guest_cr0 &= !Cr0Flags::WRITE_PROTECT.bits(); // WP = 0 (can be 0 initially)
+
+        // Apply VMX fixed bits (CRITICAL for VMLAUNCH success!)
+        guest_cr0 = (guest_cr0 & vmx_cr0_fixed1) | vmx_cr0_fixed0;
+
+        log::debug!("VMX CR0 fixed0: {:#018x}, fixed1: {:#018x}", vmx_cr0_fixed0, vmx_cr0_fixed1);
+
+        // CRITICAL FIX: Use actual current CR3, not the empty host_cr3 parameter
+        let mut guest_cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+
+        unsafe {
+            let pml4_ptr = guest_cr3 as *const u64;
+            let pml4_entry_0 = core::ptr::read_volatile(pml4_ptr);
+
+            log::debug!("Verifying guest_cr3 {:#x}", guest_cr3);
+            log::debug!("PML4[0] at guest_cr3 = {:#x}", pml4_entry_0);
+
+            if pml4_entry_0 == 0 {
+                log::error!("CRITICAL: Current CR3 points to empty page tables!");
+                log::error!("This should never happen!");
+                panic!("No valid page tables available for guest!");
+            } else {
+                log::debug!("✓ Guest CR3 points to valid page tables (PML4[0] = {:#x})", pml4_entry_0);
+            }
+        }
+
+        // Verify Guest RIP points to valid code
+        let guest_rip = guest_registers.rip;
+
+        unsafe {
+            let rip_bytes = core::slice::from_raw_parts(guest_rip as *const u8, 32);
+            log::debug!("Verifying Guest RIP: {:#x}", guest_rip);
+            log::debug!("First 16 bytes at Guest RIP: {:02x?}", &rip_bytes[0..16]);
+
+            // Check if it starts with UD2 (0x0F 0x0B) or HLT (0xF4)
+            if rip_bytes[0] == 0x0F && rip_bytes[1] == 0x0B {
+                log::debug!("✓ Guest RIP starts with UD2 (undefined instruction for testing)");
+            } else if rip_bytes[0] == 0xF4 && rip_bytes[1] == 0xF4 {
+                log::debug!("✓ Guest RIP starts with HLT HLT");
+
+                if rip_bytes[2] == 0xEB {
+                    log::debug!("✓ Followed by JMP (HLT loop)");
+                }
+            } else {
+                log::error!("❌ Guest RIP does not start with expected instructions!");
+                log::error!("Expected: 0x0F 0x0B (UD2) or 0xF4 0xF4 (HLT HLT)");
+                log::error!("Got: {:02x?}", &rip_bytes[0..4]);
+            }
+        }
+
+        // Same for CR4 - apply VMX fixed bits
+        let vmx_cr4_fixed0 = rdmsr(msr::IA32_VMX_CR4_FIXED0);
+        let vmx_cr4_fixed1 = rdmsr(msr::IA32_VMX_CR4_FIXED1);
 
         let mut guest_cr4 = Cr4::read_raw();
+        guest_cr4 |= Cr4Flags::PHYSICAL_ADDRESS_EXTENSION.bits(); // PAE = 1 (required for long mode)
+
+        // Apply VMX fixed bits FIRST
+        guest_cr4 = (guest_cr4 & vmx_cr4_fixed1) | vmx_cr4_fixed0;
+
+        // Then clear VMXE AFTER applying fixed bits (guests cannot use VMX)
         guest_cr4 &= !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits();
-        guest_cr4 &= !Cr4Flags::PHYSICAL_ADDRESS_EXTENSION.bits(); // Disable PAE for 32-bit mode
+
+        log::debug!("VMX CR4 fixed0: {:#018x}, fixed1: {:#018x}", vmx_cr4_fixed0, vmx_cr4_fixed1);
 
         vmwrite(vmcs::guest::CR0, guest_cr0);
         vmwrite(vmcs::guest::CR3, guest_cr3);
         vmwrite(vmcs::guest::CR4, guest_cr4);
 
-        log::debug!("Guest CR0 (32-bit mode): {:#018x}, Guest CR3: {:#018x}, Guest CR4: {:#018x}", guest_cr0, guest_cr3, guest_cr4);
+        log::debug!("Guest CR0 (64-bit mode): {:#018x}, Guest CR3: {:#018x}, Guest CR4: {:#018x}", guest_cr0, guest_cr3, guest_cr4);
 
         // Debug registers
         vmwrite(vmcs::guest::DR7, unsafe { dr7().0 as u64 });
@@ -98,35 +157,44 @@ impl Vmcs {
         // IA32_EFER: must be consistent with IA32E_MODE_GUEST entry controls
         // ---------------------------------------------------------------------
         //
-        // TEMPORARY DEBUG: Disable long mode to test 32-bit protected mode
+        // CRITICAL FIX: Enable long mode in guest EFER
         let mut guest_efer = rdmsr(msr::IA32_EFER);
-        guest_efer &= !(1 << 8); // Clear LME (Long Mode Enable)
-        guest_efer &= !(1 << 10); // Clear LMA (Long Mode Active)
+        guest_efer |= 1 << 8; // LME (Long Mode Enable) = 1
+        guest_efer |= 1 << 10; // LMA (Long Mode Active) = 1
         vmwrite(vmcs::guest::IA32_EFER_FULL, guest_efer);
 
-        log::debug!("Guest EFER (32-bit mode): {:#018x}", guest_efer);
+        log::debug!("Guest EFER (64-bit mode): {:#018x}", guest_efer);
 
         // ---------------------------------------------------------------------
         // Segment selectors
         // ---------------------------------------------------------------------
-        // CRITICAL FIX: Use selector 0x0008 for CS (index 1) instead of 0x0018
-        // Index 1 is more likely to be a valid code segment in the UEFI GDT
-        vmwrite(vmcs::guest::CS_SELECTOR, 0x0008u16); // Use index 1 instead of current CS
-        vmwrite(vmcs::guest::SS_SELECTOR, 0x0010u16); // Use index 2 for SS (data segment)
+        // CRITICAL: Use selector 0x0008 for CS (64-bit code segment)
+        // The guest descriptor's CS (0x0018) might point to a 32-bit segment in UEFI GDT
+        // Selector 0x0008 (index 1) is the standard 64-bit code segment
+        vmwrite(vmcs::guest::CS_SELECTOR, 0x0008u16);
+        vmwrite(vmcs::guest::SS_SELECTOR, 0x0010u16);
         vmwrite(vmcs::guest::DS_SELECTOR, 0x0010u16);
         vmwrite(vmcs::guest::ES_SELECTOR, 0x0010u16);
         vmwrite(vmcs::guest::FS_SELECTOR, 0x0010u16);
         vmwrite(vmcs::guest::GS_SELECTOR, 0x0010u16);
 
         vmwrite(vmcs::guest::LDTR_SELECTOR, 0u16);
-        // For 32-bit mode, TR can be 0 with unrestricted guest
-        vmwrite(vmcs::guest::TR_SELECTOR, 0u16);
-
-        // All segment base registers are zero for flat model
-        vmwrite(vmcs::guest::TR_BASE, 0u64);
+        vmwrite(vmcs::guest::TR_SELECTOR, guest_descriptor.tr.bits());
 
         // ---------------------------------------------------------------------
-        // Segment limits - use flat 4GB limit for 32-bit mode
+        // Segment bases - ALL must be initialized
+        // ---------------------------------------------------------------------
+        vmwrite(vmcs::guest::CS_BASE, 0u64);
+        vmwrite(vmcs::guest::SS_BASE, 0u64);
+        vmwrite(vmcs::guest::DS_BASE, 0u64);
+        vmwrite(vmcs::guest::ES_BASE, 0u64);
+        vmwrite(vmcs::guest::FS_BASE, 0u64);
+        vmwrite(vmcs::guest::GS_BASE, 0u64);
+        vmwrite(vmcs::guest::LDTR_BASE, 0u64);
+        vmwrite(vmcs::guest::TR_BASE, guest_descriptor.tss.base);
+
+        // ---------------------------------------------------------------------
+        // Segment limits - use flat limits for 64-bit mode
         // ---------------------------------------------------------------------
         vmwrite(vmcs::guest::CS_LIMIT, 0xFFFFFFFFu32);
         vmwrite(vmcs::guest::SS_LIMIT, 0xFFFFFFFFu32);
@@ -135,53 +203,90 @@ impl Vmcs {
         vmwrite(vmcs::guest::FS_LIMIT, 0xFFFFFFFFu32);
         vmwrite(vmcs::guest::GS_LIMIT, 0xFFFFFFFFu32);
         vmwrite(vmcs::guest::LDTR_LIMIT, 0u32);
-        vmwrite(vmcs::guest::TR_LIMIT, 0x67u32); // Minimum size for 32-bit TSS
+        vmwrite(vmcs::guest::TR_LIMIT, guest_descriptor.tss.limit as u32);
 
         // ---------------------------------------------------------------------
-        // Segment access rights - manually set for 32-bit protected mode
+        // Segment access rights - 64-BIT MODE ENCODINGS
         // ---------------------------------------------------------------------
-        // CS: 32-bit code segment (type=0xB, present, DPL=0, G=1, D/B=1)
-        // Type 0xB = Execute/Read, accessed, conforming
-        vmwrite(vmcs::guest::CS_ACCESS_RIGHTS, 0xC09B as u64); // Present, DPL=0, Code, G=1, D/B=1
+        log::debug!("=== Setting up segment access rights for 64-bit mode ===");
 
-        // Data segments: 32-bit data segment (type=0x3, present, DPL=0, G=1, D/B=1)
-        vmwrite(vmcs::guest::SS_ACCESS_RIGHTS, 0xC093 as u64); // Present, DPL=0, Data, G=1, D/B=1
-        vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, 0xC093 as u64);
-        vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, 0xC093 as u64);
-        vmwrite(vmcs::guest::FS_ACCESS_RIGHTS, 0xC093 as u64);
-        vmwrite(vmcs::guest::GS_ACCESS_RIGHTS, 0xC093 as u64);
-        vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, 0x10000 as u64); // Unusable
-        vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, 0x8B as u64); // 32-bit TSS (busy)
+        // 64-bit code segment: P=1, DPL=0, S=1, Type=1011, G=1, L=1, D=0
+        let cs_ar = 0xA09Bu32;
+
+        // Data segments: P=1, DPL=0, S=1, Type=0011, G=1, D=1
+        let data_ar = 0xC093u32;
+
+        // LDTR: Unusable (bit 16 set)
+        let ldtr_ar = 0x10000u32;
+
+        // TSS: Available 64-bit TSS (type=1001), P=1, DPL=0
+        let tss_ar = 0x008Bu32;
+
+        vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, data_ar);
+        vmwrite(vmcs::guest::CS_ACCESS_RIGHTS, cs_ar);
+        vmwrite(vmcs::guest::SS_ACCESS_RIGHTS, data_ar);
+        vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, data_ar);
+        vmwrite(vmcs::guest::FS_ACCESS_RIGHTS, data_ar);
+        vmwrite(vmcs::guest::GS_ACCESS_RIGHTS, data_ar);
+        vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, ldtr_ar);
+        vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, tss_ar);
+
+        log::debug!("=== VERIFYING ALL SEGMENT ACCESS RIGHTS ===");
+        log::debug!("ES AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::ES_ACCESS_RIGHTS), data_ar);
+        log::debug!("CS AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::CS_ACCESS_RIGHTS), cs_ar);
+        log::debug!("SS AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::SS_ACCESS_RIGHTS), data_ar);
+        log::debug!("DS AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::DS_ACCESS_RIGHTS), data_ar);
+        log::debug!("FS AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::FS_ACCESS_RIGHTS), data_ar);
+        log::debug!("GS AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::GS_ACCESS_RIGHTS), data_ar);
+        log::debug!("LDTR AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::LDTR_ACCESS_RIGHTS), ldtr_ar);
+        log::debug!("TR AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::TR_ACCESS_RIGHTS), tss_ar);
 
         // ---------------------------------------------------------------------
-        // Descriptor tables
+        // GDTR and IDTR
         // ---------------------------------------------------------------------
         vmwrite(vmcs::guest::GDTR_BASE, guest_descriptor.gdtr.base as u64);
-        vmwrite(vmcs::guest::GDTR_LIMIT, guest_descriptor.gdtr.limit as u64);
+        vmwrite(vmcs::guest::GDTR_LIMIT, guest_descriptor.gdtr.limit as u32);
 
-        // Guest IDTR: Use the host's IDT for now since we're in unrestricted guest mode
-        // This prevents triple faults by ensuring valid exception handlers exist
-        let host_idtr = sidt();
-        vmwrite(vmcs::guest::IDTR_BASE, host_idtr.base as u64);
-        vmwrite(vmcs::guest::IDTR_LIMIT, host_idtr.limit as u64);
+        let idtr = sidt();
+        vmwrite(vmcs::guest::IDTR_BASE, idtr.base as u64);
+        vmwrite(vmcs::guest::IDTR_LIMIT, idtr.limit as u32);
 
-        // Guest SYSENTER MSRs - must be initialized!
-        vmwrite(vmcs::guest::IA32_SYSENTER_CS, 0u64);
-        vmwrite(vmcs::guest::IA32_SYSENTER_ESP, 0u64);
-        vmwrite(vmcs::guest::IA32_SYSENTER_EIP, 0u64);
-
-        // No VMCS shadowing in use
+        // ---------------------------------------------------------------------
+        // VMCS link pointer
+        // ---------------------------------------------------------------------
         vmwrite(vmcs::guest::LINK_PTR_FULL, u64::MAX);
 
-        // Guest interruptibility state - must be initialized!
-        // Set to 0 (no blocking conditions)
-        vmwrite(vmcs::guest::INTERRUPTIBILITY_STATE, 0u32);
+        // ---------------------------------------------------------------------
+        // Guest non-register state
+        // ---------------------------------------------------------------------
+        vmwrite(vmcs::guest::ACTIVITY_STATE, 0u32); // Active
+        vmwrite(vmcs::guest::INTERRUPTIBILITY_STATE, 0u32); // Not blocked
 
-        // Guest activity state - 0 = Active
-        vmwrite(vmcs::guest::ACTIVITY_STATE, 0u32);
-
-        // Guest pending debug exceptions - must be 0
+        // CRITICAL: Set PENDING_DEBUG_EXCEPTIONS to 0
+        log::debug!("=== SETTING PENDING_DBG_EXCEPTIONS ===");
         vmwrite(vmcs::guest::PENDING_DBG_EXCEPTIONS, 0u64);
+        log::debug!("After write, PENDING_DBG_EXCEPTIONS = {:#x}", vmread(vmcs::guest::PENDING_DBG_EXCEPTIONS));
+
+        // ---------------------------------------------------------------------
+        // MSRs
+        // ---------------------------------------------------------------------
+        vmwrite(vmcs::guest::IA32_DEBUGCTL_FULL, rdmsr(msr::IA32_DEBUGCTL));
+        vmwrite(vmcs::guest::IA32_SYSENTER_CS, rdmsr(msr::IA32_SYSENTER_CS) as u32);
+        vmwrite(vmcs::guest::IA32_SYSENTER_ESP, rdmsr(msr::IA32_SYSENTER_ESP));
+        vmwrite(vmcs::guest::IA32_SYSENTER_EIP, rdmsr(msr::IA32_SYSENTER_EIP));
+
+        log::debug!("=== FINAL VMCS FIELD VERIFICATION ===");
+        log::debug!("Final ES AR: {:#06x}", vmread(vmcs::guest::ES_ACCESS_RIGHTS));
+        log::debug!("Final CS AR: {:#06x}", vmread(vmcs::guest::CS_ACCESS_RIGHTS));
+        log::debug!("Final SS AR: {:#06x}", vmread(vmcs::guest::SS_ACCESS_RIGHTS));
+        log::debug!("Final DS AR: {:#06x}", vmread(vmcs::guest::DS_ACCESS_RIGHTS));
+        log::debug!("Final FS AR: {:#06x}", vmread(vmcs::guest::FS_ACCESS_RIGHTS));
+        log::debug!("Final GS AR: {:#06x}", vmread(vmcs::guest::GS_ACCESS_RIGHTS));
+        log::debug!("Final LDTR AR: {:#06x}", vmread(vmcs::guest::LDTR_ACCESS_RIGHTS));
+        log::debug!("Final TR AR: {:#06x}", vmread(vmcs::guest::TR_ACCESS_RIGHTS));
+        log::debug!("Final Activity State: {:#x}", vmread(vmcs::guest::ACTIVITY_STATE));
+        log::debug!("Final Interruptibility: {:#x}", vmread(vmcs::guest::INTERRUPTIBILITY_STATE));
+        log::debug!("Final Pending Debug: {:#x}", vmread(vmcs::guest::PENDING_DBG_EXCEPTIONS));
 
         log::debug!("Guest Registers State setup successfully!");
     }
@@ -193,61 +298,61 @@ impl Vmcs {
     ///
     /// # Arguments
     /// * `host_descriptor` - Descriptor tables for the host.
-    /// * `pml4_pa` - Physical address of the host PML4 for CR3.
+    /// * `pml4_pa` - Physical address of the host PML4 for CR3 (IGNORED - we use actual CR3).
     pub fn setup_host_registers_state(host_descriptor: &Descriptors, pml4_pa: u64) -> Result<(), HypervisorError> {
         log::debug!("Setting up Host Registers State");
 
         let host_idtr = sidt();
 
+        // CRITICAL FIX: Use actual current CR3, not the empty pml4_pa parameter
+        // The pml4_pa from host_paging is empty, but the current CR3 has valid page tables
+        let actual_cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+        log::debug!("Host CR3: using actual CR3 {:#x} instead of pml4_pa {:#x}", actual_cr3, pml4_pa);
+
+        // Verify the actual CR3 has valid page tables
+        unsafe {
+            let pml4_ptr = actual_cr3 as *const u64;
+            let pml4_entry_0 = core::ptr::read_volatile(pml4_ptr);
+            if pml4_entry_0 == 0 {
+                log::error!("FATAL: Even actual CR3 has empty page tables!");
+                return Err(HypervisorError::InvalidHostState);
+            }
+            log::debug!("✓ Host CR3 verified: PML4[0] = {:#x}", pml4_entry_0);
+        }
+
         // ---------------------------------------------------------------------
         // Host Control Registers (MANDATORY)
         // ---------------------------------------------------------------------
-        // These MUST match the current CPU state with VMXE enabled
         vmwrite(vmcs::host::CR0, Cr0::read_raw());
-        vmwrite(vmcs::host::CR3, pml4_pa);
+        vmwrite(vmcs::host::CR3, actual_cr3); // Use actual CR3, not pml4_pa!
         vmwrite(vmcs::host::CR4, Cr4::read_raw());
 
         // ---------------------------------------------------------------------
         // Host RSP and RIP (MANDATORY)
         // ---------------------------------------------------------------------
         // RIP: Must point to the VM-exit handler
-        // The vmexit_handler is defined in vmexit.rs as a naked function
-        // that handles VM exits and returns control back to Rust code.
-        //
-        // NOTE: If you don't have a vmexit_handler function yet, you need to create one.
-        // For now, we'll use a placeholder that you MUST replace with your actual handler.
-
-        // Host RIP must point to the VM-exit handler
-        // This assembly function will be called when a VM-exit occurs
         unsafe extern "C" {
             fn vmexit_handler();
         }
         vmwrite(vmcs::host::RIP, vmexit_handler as u64);
 
-        // Host RSP will be set dynamically in the launch_vm assembly code
-        // before executing VMLAUNCH/VMRESUME
-        // NOTE: We do NOT set it here - the assembly stub in vmlaunch.rs
-        // sets it to the current stack pointer right before VMLAUNCH/VMRESUME
-        // This ensures we have a valid stack when VM-exit occurs
-        // DO NOT write 0 or any static value here!
+        // Host RSP will be set dynamically in vm.rs run() method
+        // RIGHT BEFORE executing VMLAUNCH/VMRESUME
 
         // ---------------------------------------------------------------------
-        // Host Segment Selectors (MANDATORY)
+        // Host segment selectors (MANDATORY)
         // ---------------------------------------------------------------------
-        // CS and TR must use the NEW host GDT selectors
-        // SS, DS, ES, FS, GS should be set to valid selectors (or 0 with proper handling)
-        vmwrite(vmcs::host::CS_SELECTOR, host_descriptor.cs.bits());
-        vmwrite(vmcs::host::SS_SELECTOR, host_descriptor.cs.bits()); // Use same as CS for simplicity
-        vmwrite(vmcs::host::DS_SELECTOR, host_descriptor.cs.bits()); // Use same as CS for simplicity
-        vmwrite(vmcs::host::ES_SELECTOR, host_descriptor.cs.bits()); // Use same as CS for simplicity
-        vmwrite(vmcs::host::FS_SELECTOR, 0u16); // FS can be 0 if FS_BASE is set
-        vmwrite(vmcs::host::GS_SELECTOR, 0u16); // GS can be 0 if GS_BASE is set
-        vmwrite(vmcs::host::TR_SELECTOR, host_descriptor.tr.bits());
+        vmwrite(vmcs::host::CS_SELECTOR, host_descriptor.cs.bits()); // 0x08
+        vmwrite(vmcs::host::SS_SELECTOR, 0x0010u16); // Data segment
+        vmwrite(vmcs::host::DS_SELECTOR, 0x0010u16);
+        vmwrite(vmcs::host::ES_SELECTOR, 0x0010u16);
+        vmwrite(vmcs::host::FS_SELECTOR, 0u16);
+        vmwrite(vmcs::host::GS_SELECTOR, 0u16);
+        vmwrite(vmcs::host::TR_SELECTOR, 0x0018u16); // TSS now at index 3 (0x18)
 
         // ---------------------------------------------------------------------
-        // Host Segment Base Addresses (MANDATORY for FS, GS, TR, GDTR, IDTR)
+        // Host base addresses for FS, GS, TR, GDTR, IDTR (MANDATORY)
         // ---------------------------------------------------------------------
-        // Read current FS and GS base addresses from MSRs
         let host_fs_base = rdmsr(msr::IA32_FS_BASE);
         let host_gs_base = rdmsr(msr::IA32_GS_BASE);
 
@@ -260,7 +365,6 @@ impl Vmcs {
         // ---------------------------------------------------------------------
         // Host SYSENTER MSRs (MANDATORY)
         // ---------------------------------------------------------------------
-        // These must be set even if not used
         let host_sysenter_cs = rdmsr(msr::IA32_SYSENTER_CS);
         let host_sysenter_esp = rdmsr(msr::IA32_SYSENTER_ESP);
         let host_sysenter_eip = rdmsr(msr::IA32_SYSENTER_EIP);
@@ -272,10 +376,14 @@ impl Vmcs {
         // ---------------------------------------------------------------------
         // Host IA32_EFER (CONDITIONAL - required if loading on VM-exit is enabled)
         // ---------------------------------------------------------------------
-        // Since we set HOST_ADDRESS_SPACE_SIZE (bit 9) in exit controls,
-        // we should also load IA32_EFER on VM-exit
         let host_efer = rdmsr(msr::IA32_EFER);
         vmwrite(vmcs::host::IA32_EFER_FULL, host_efer);
+
+        // ---------------------------------------------------------------------
+        // Host PAT MSR (CONDITIONAL - if loading is enabled in exit controls)
+        // ---------------------------------------------------------------------
+        let host_pat = rdmsr(msr::IA32_PAT);
+        vmwrite(vmcs::host::IA32_PAT_FULL, host_pat);
 
         log::debug!("Host Registers State setup successfully!");
 
@@ -283,26 +391,12 @@ impl Vmcs {
     }
 
     /// Initialize the VMCS control values for the currently loaded VMCS.
-    ///
-    /// The method sets up various VMX control fields in the VMCS as per the
-    /// Intel® 64 and IA-32 Architectures Software Developer's Manual sections:
-    /// - 25.6 VM-EXECUTION CONTROL FIELDS
-    /// - 25.7 VM-EXIT CONTROL FIELDS
-    /// - 25.8 VM-ENTRY CONTROL FIELDS
-    ///
-    /// # Arguments
-    ///
-    /// * `primary_eptp` - The EPTP value for the primary EPT.
-    /// * `msr_bitmap` - The physical address of the MSR bitmap.
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), HypervisorError>` - A result indicating the success or failure of the operation.
-    pub fn setup_vmcs_control_fields(primary_eptp: u64, msr_bitmap: u64) -> Result<(), HypervisorError> {
+    pub fn setup_vmcs_control_fields(primary_eptp: u64, msr_bitmap: u64, io_bitmap_a: u64, io_bitmap_b: u64) -> Result<(), HypervisorError> {
         log::debug!("Setting up VMCS Control Fields");
 
-        const PRIMARY_CTL: u64 =
-            (vmcs::control::PrimaryControls::SECONDARY_CONTROLS.bits() | vmcs::control::PrimaryControls::USE_MSR_BITMAPS.bits()) as u64;
+        const PRIMARY_CTL: u64 = (vmcs::control::PrimaryControls::SECONDARY_CONTROLS.bits()
+            | vmcs::control::PrimaryControls::USE_MSR_BITMAPS.bits()
+            | vmcs::control::PrimaryControls::HLT_EXITING.bits()) as u64;
 
         const SECONDARY_CTL: u64 = (vmcs::control::SecondaryControls::ENABLE_RDTSCP.bits()
             | vmcs::control::SecondaryControls::ENABLE_XSAVES_XRSTORS.bits()
@@ -312,13 +406,14 @@ impl Vmcs {
             | vmcs::control::SecondaryControls::CONCEAL_VMX_FROM_PT.bits()
             | vmcs::control::SecondaryControls::UNRESTRICTED_GUEST.bits()) as u64;
 
-        const ENTRY_CTL: u64 =
-            (vmcs::control::EntryControls::LOAD_DEBUG_CONTROLS.bits() | vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
-        // NOTE: IA32E_MODE_GUEST is NOT set - we're testing 32-bit mode
+        const ENTRY_CTL: u64 = (vmcs::control::EntryControls::LOAD_DEBUG_CONTROLS.bits()
+            | vmcs::control::EntryControls::IA32E_MODE_GUEST.bits()
+            | vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
 
         const EXIT_CTL: u64 = (vmcs::control::ExitControls::HOST_ADDRESS_SPACE_SIZE.bits()
             | vmcs::control::ExitControls::SAVE_DEBUG_CONTROLS.bits()
             | vmcs::control::ExitControls::LOAD_IA32_EFER.bits()
+            | vmcs::control::ExitControls::LOAD_IA32_PAT.bits()
             | vmcs::control::ExitControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
 
         const PINBASED_CTL: u64 = 0;
@@ -329,13 +424,22 @@ impl Vmcs {
         vmwrite(vmcs::control::VMEXIT_CONTROLS, adjust_vmx_controls(VmxControl::VmExit, EXIT_CTL));
         vmwrite(vmcs::control::PINBASED_EXEC_CONTROLS, adjust_vmx_controls(VmxControl::PinBased, PINBASED_CTL));
 
+        let primary_controls = vmread(vmcs::control::PRIMARY_PROCBASED_EXEC_CONTROLS);
+        let secondary_controls = vmread(vmcs::control::SECONDARY_PROCBASED_EXEC_CONTROLS);
+        let vmentry_controls = vmread(vmcs::control::VMENTRY_CONTROLS);
+
+        log::debug!("Primary controls:  {:#010x}", primary_controls);
+        log::debug!("Secondary controls: {:#010x}", secondary_controls);
+        log::debug!("VM-entry controls: {:#010x}", vmentry_controls);
+        log::debug!("Unrestricted Guest: {}", (secondary_controls & vmcs::control::SecondaryControls::UNRESTRICTED_GUEST.bits() as u64) != 0);
+        log::debug!("IA32E_MODE_GUEST: {}", (vmentry_controls & vmcs::control::EntryControls::IA32E_MODE_GUEST.bits() as u64) != 0);
+
         let vmx_cr0_fixed0 = unsafe { msr::rdmsr(msr::IA32_VMX_CR0_FIXED0) };
         let vmx_cr0_fixed1 = unsafe { msr::rdmsr(msr::IA32_VMX_CR0_FIXED1) };
 
         let vmx_cr4_fixed0 = unsafe { msr::rdmsr(msr::IA32_VMX_CR4_FIXED0) };
         let vmx_cr4_fixed1 = unsafe { msr::rdmsr(msr::IA32_VMX_CR4_FIXED1) };
 
-        // Credits to @vmctx
         vmwrite(
             vmcs::control::CR0_GUEST_HOST_MASK,
             vmx_cr0_fixed0 | !vmx_cr0_fixed1 | Cr0Flags::CACHE_DISABLE.bits() | Cr0Flags::WRITE_PROTECT.bits(),
@@ -346,11 +450,16 @@ impl Vmcs {
         vmwrite(vmcs::control::CR4_READ_SHADOW, Cr4::read_raw() & !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits());
 
         vmwrite(vmcs::control::MSR_BITMAPS_ADDR_FULL, msr_bitmap);
-        vmwrite(vmcs::control::EXCEPTION_BITMAP, 0u32); // No exceptions intercepted for now
 
-        // VM-entry interrupt information - must be 0 for normal entry
-        // These fields control event injection on VM entry
-        // For now, we don't inject any events, so set them all to 0
+        vmwrite(0x2000, io_bitmap_a); // IO_BITMAP_A
+        vmwrite(0x2002, io_bitmap_b); // IO_BITMAP_B
+
+        vmwrite(vmcs::control::EXCEPTION_BITMAP, 0xFFFFFFFFu32);
+        log::debug!("Exception bitmap set to intercept all exceptions (debugging mode)");
+
+        vmwrite(0x4016, 0u32); // VM_ENTRY_INTR_INFO
+        vmwrite(0x4018, 0u32); // VM_ENTRY_EXCEPTION_ERROR_CODE
+        vmwrite(0x401A, 0u32); // VM_ENTRY_INSTRUCTION_LEN
 
         vmwrite(vmcs::control::EPTP_FULL, primary_eptp);
         vmwrite(vmcs::control::VPID, VPID_TAG);

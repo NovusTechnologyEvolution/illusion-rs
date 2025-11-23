@@ -1,16 +1,16 @@
 vcpu-0 INFO: The Matrix is an illusion
 vcpu-0 DEBUG: Setting up the hypervisor
-vcpu-0 DEBUG: Loaded image base: 0x96f4000..0xd73b000
+vcpu-0 DEBUG: Loaded image base: 0x96e7000..0xd73b000
 vcpu-0 DEBUG: Starting hypervisor on all processors
 vcpu-0 INFO: start_hypervisor_on_all_processors: ENTRY
 vcpu-0 INFO: Total processors: 8, enabled: 8
 vcpu-0 DEBUG: start_hypervisor_on_this_cpu: ENTRY
 vcpu-0 DEBUG: capture_registers → already = false
 vcpu-0 DEBUG: virtualizing CPU …
-vcpu-0 DEBUG: resume_from_virtualization virtual: 0x96f5000
-vcpu-0 DEBUG: resume_from_virtualization physical: 0x96f5000
-vcpu-0 DEBUG: Guest will resume at RIP (physical): 0x96f5000
-vcpu-0 DEBUG: virtualize_system(): landing=0x971eca0, host_stack_top=0xfbc5020
+vcpu-0 DEBUG: resume_from_virtualization virtual: 0x96e8000
+vcpu-0 DEBUG: resume_from_virtualization physical: 0x96e8000
+vcpu-0 DEBUG: Guest will resume at RIP (physical): 0x96e8000
+vcpu-0 DEBUG: virtualize_system(): landing=0x971bfb0, host_stack_top=0xfbc4020
 vcpu-0 DEBUG: landing(): calling start_hypervisor
 vcpu-0 DEBUG: Starting hypervisor
 vcpu-0 INFO: CPU is Intel
@@ -27,41 +27,87 @@ vcpu-0 DEBUG: VMX enabled
 vcpu-0 DEBUG: Creating a new GDT with TSS for guest
 vcpu-0 DEBUG: New GDT with TSS created for guest successfully!
 vcpu-0 DEBUG: Creating a new GDT with TSS for host
+vcpu-0 DEBUG: TSS base address: 0x000000000fbbc060
+vcpu-0 DEBUG: TSS limit: 0x0000000000000067
+vcpu-0 DEBUG: TSS descriptor low: 0x0f0089bbc0600067
 vcpu-0 DEBUG: New GDT with TSS and IDT created for host successfully!
 vcpu-0 DEBUG: Setting up Guest Registers State
-vcpu-0 DEBUG: Guest CR0 (32-bit mode): 0x0000000000000033, Guest CR3: 0x0000000000000000, Guest CR4: 0x0000000000000648
-vcpu-0 DEBUG: Guest RSP: 0x000000000ffca528, Guest RIP: 0x00000000096f5000
-vcpu-0 DEBUG: Guest EFER (32-bit mode): 0x0000000000000000
+vcpu-0 DEBUG: VMX CR0 fixed0: 0x0000000080000021, fixed1: 0x00000000ffffffff
+vcpu-0 DEBUG: Verifying guest_cr3 0xfc01000
+vcpu-0 DEBUG: PML4[0] at guest_cr3 = 0xfc02023
+vcpu-0 DEBUG: ✓ Guest CR3 points to valid page tables (PML4[0] = 0xfc02023)
+vcpu-0 DEBUG: Verifying Guest RIP: 0x96e8000
+vcpu-0 DEBUG: First 16 bytes at Guest RIP: [0f, 0b, f4, f4, eb, fa, 66, 2e, 0f, 1f, 84, 00, 00, 00, 00, 00]
+vcpu-0 DEBUG: ✓ Guest RIP starts with UD2 (undefined instruction for testing)
+vcpu-0 DEBUG: VMX CR4 fixed0: 0x0000000000002000, fixed1: 0x0000000001f72fff
+vcpu-0 DEBUG: Guest CR0 (64-bit mode): 0x0000000080000033, Guest CR3: 0x000000000fc01000, Guest CR4: 0x0000000000000668
+vcpu-0 DEBUG: Guest RSP: 0x000000000ffca528, Guest RIP: 0x00000000096e8000
+vcpu-0 DEBUG: Guest EFER (64-bit mode): 0x0000000000000500
+vcpu-0 DEBUG: === Setting up segment access rights for 64-bit mode ===
+vcpu-0 DEBUG: === VERIFYING ALL SEGMENT ACCESS RIGHTS ===
+vcpu-0 DEBUG: ES AR: 0xc093 (expected 0xc093)
+vcpu-0 DEBUG: CS AR: 0xa09b (expected 0xa09b)
+vcpu-0 DEBUG: SS AR: 0xc093 (expected 0xc093)
+vcpu-0 DEBUG: DS AR: 0xc093 (expected 0xc093)
+vcpu-0 DEBUG: FS AR: 0xc093 (expected 0xc093)
+vcpu-0 DEBUG: GS AR: 0xc093 (expected 0xc093)
+vcpu-0 DEBUG: LDTR AR: 0x10000 (expected 0x10000)
+vcpu-0 DEBUG: TR AR: 0x008b (expected 0x008b)
+vcpu-0 DEBUG: === SETTING PENDING_DBG_EXCEPTIONS ===
+vcpu-0 DEBUG: After write, PENDING_DBG_EXCEPTIONS = 0x0
+vcpu-0 DEBUG: === FINAL VMCS FIELD VERIFICATION ===
+vcpu-0 DEBUG: Final ES AR: 0xc093
+vcpu-0 DEBUG: Final CS AR: 0xa09b
+vcpu-0 DEBUG: Final SS AR: 0xc093
+vcpu-0 DEBUG: Final DS AR: 0xc093
+vcpu-0 DEBUG: Final FS AR: 0xc093
+vcpu-0 DEBUG: Final GS AR: 0xc093
+vcpu-0 DEBUG: Final LDTR AR: 0x10000
+vcpu-0 DEBUG: Final TR AR: 0x008b
+vcpu-0 DEBUG: Final Activity State: 0x0
+vcpu-0 DEBUG: Final Interruptibility: 0x0
+vcpu-0 DEBUG: Final Pending Debug: 0x0
 vcpu-0 DEBUG: Guest Registers State setup successfully!
 vcpu-0 DEBUG: Setting up Host Registers State
+vcpu-0 DEBUG: Host CR3: using actual CR3 0xfc01000 instead of pml4_pa 0x9734000
+vcpu-0 DEBUG: ✓ Host CR3 verified: PML4[0] = 0xfc02023
 vcpu-0 DEBUG: Host Registers State setup successfully!
 vcpu-0 DEBUG: Setting up VMCS Control Fields
+vcpu-0 DEBUG: Primary controls:  0x940061f2
+vcpu-0 DEBUG: Secondary controls: 0x001010aa
+vcpu-0 DEBUG: VM-entry controls: 0x000013ff
+vcpu-0 DEBUG: Unrestricted Guest: true
+vcpu-0 DEBUG: IA32E_MODE_GUEST: true
+vcpu-0 DEBUG: Exception bitmap set to intercept all exceptions (debugging mode)
 vcpu-0 DEBUG: VMCS Control Fields setup successfully!
 vcpu-0 DEBUG: VMCS activated
 vcpu-0 INFO: Launching the VM until a vmexit occurs...
-vcpu-0 ERROR: === Pre-VMLAUNCH diagnostics ===
+vcpu-0 DEBUG: Setting HOST_RSP to 0xfbc3940 (current RSP 0xfbc3988 - 72 bytes)
+vcpu-0 DEBUG: HOST_RSP verified: 0xfbc3940
+vcpu-0 DEBUG: HOST_RIP: 0x96e80f7, vmexit_handler address: 0x96e80f7
+vcpu-0 DEBUG: === Pre-VMLAUNCH diagnostics ===
 vcpu-0 ERROR: === GUEST STATE VALIDITY CHECK ===
-vcpu-0 ERROR: Guest CR0: 0x0000000000000033
+vcpu-0 ERROR: Guest CR0: 0x0000000080000033
 vcpu-0 ERROR:   PE (Protected Mode): true
-vcpu-0 ERROR:   PG (Paging): false
-vcpu-0 ERROR: Guest CR3: 0x0000000000000000
-vcpu-0 ERROR: Guest CR4: 0x0000000000000648
-vcpu-0 ERROR:   PAE: false
+vcpu-0 ERROR:   PG (Paging): true
+vcpu-0 ERROR: Guest CR3: 0x000000000fc01000
+vcpu-0 ERROR: Guest CR4: 0x0000000000000668
+vcpu-0 ERROR:   PAE: true
 vcpu-0 ERROR:   VMXE: false (should be 0 in guest)
 vcpu-0 ERROR: Guest RFLAGS: 0x0000000000000246
 vcpu-0 ERROR:   RF (Resume Flag): false
 vcpu-0 ERROR:   VM (Virtual-8086): false
-vcpu-0 ERROR: Guest RIP: 0x00000000096f5000
-vcpu-0 ERROR:   IA-32e mode: false
+vcpu-0 ERROR: Guest RIP: 0x00000000096e8000
+vcpu-0 ERROR:   IA-32e mode: true
 vcpu-0 ERROR:   RIP is canonical: true
-vcpu-0 ERROR: Guest IA32_EFER: 0x0000000000000000
-vcpu-0 ERROR:   LME (Long Mode Enable): false
-vcpu-0 ERROR:   LMA (Long Mode Active): false
+vcpu-0 ERROR: Guest IA32_EFER: 0x0000000000000500
+vcpu-0 ERROR:   LME (Long Mode Enable): true
+vcpu-0 ERROR:   LMA (Long Mode Active): true
 vcpu-0 ERROR: Guest CS:
 vcpu-0 ERROR:   Selector: 0x0008
 vcpu-0 ERROR:   Base: 0x0000000000000000
 vcpu-0 ERROR:   Limit: 0xffffffff
-vcpu-0 ERROR:   Access Rights: 0x0000c09b
+vcpu-0 ERROR:   Access Rights: 0x0000a09b
 vcpu-0 ERROR:     Present: true
 vcpu-0 ERROR:     DPL: 0
 vcpu-0 ERROR:     Type: 0xb
@@ -70,37 +116,37 @@ vcpu-0 ERROR:   Selector: 0x0010
 vcpu-0 ERROR:   Access Rights: 0x0000c093
 vcpu-0 ERROR:     Present: true
 vcpu-0 ERROR: Guest GDTR:
-vcpu-0 ERROR:   Base: 0x00000000097388a0
+vcpu-0 ERROR:   Base: 0x00000000097338a8
 vcpu-0 ERROR:   Limit: 0x003f
 vcpu-0 ERROR: Guest IDTR:
 vcpu-0 ERROR:   Base: 0x000000000fb53460
 vcpu-0 ERROR:   Limit: 0x0fff
-vcpu-0 ERROR: Primary controls:  0x94006172
+vcpu-0 ERROR: Primary controls:  0x940061f2
 vcpu-0 ERROR: Secondary controls: 0x001010aa
 vcpu-0 ERROR: Unrestricted Guest: true
 vcpu-0 ERROR: === HOST STATE CHECK ===
 vcpu-0 ERROR: Host CR0: 0x0000000080010033
 vcpu-0 ERROR:   PE (Protected Mode): true
 vcpu-0 ERROR:   PG (Paging): true
-vcpu-0 ERROR: Host CR3: 0x0000000009739000
+vcpu-0 ERROR: Host CR3: 0x000000000fc01000
 vcpu-0 ERROR: Host CR4: 0x0000000000002668
 vcpu-0 ERROR:   VMXE: true (should be 1 in host)
-vcpu-0 ERROR: Host RIP: 0x00000000096f505a
-vcpu-0 ERROR: Host RSP: 0x000000000fbc4b48
+vcpu-0 ERROR: Host RIP: 0x00000000096e80f7
+vcpu-0 ERROR: Host RSP: 0x000000000fbc3940
 vcpu-0 ERROR:   RIP canonical: true
 vcpu-0 ERROR:   RSP canonical: true
 vcpu-0 ERROR: Host segments:
 vcpu-0 ERROR:   CS: 0x0008 (RPL: 0)
-vcpu-0 ERROR:   SS: 0x0008 (RPL: 0)
-vcpu-0 ERROR:   DS: 0x0008 (RPL: 0)
-vcpu-0 ERROR:   ES: 0x0008 (RPL: 0)
+vcpu-0 ERROR:   SS: 0x0010 (RPL: 0)
+vcpu-0 ERROR:   DS: 0x0010 (RPL: 0)
+vcpu-0 ERROR:   ES: 0x0010 (RPL: 0)
 vcpu-0 ERROR:   FS: 0x0000 (RPL: 0)
 vcpu-0 ERROR:   GS: 0x0000 (RPL: 0)
-vcpu-0 ERROR:   TR: 0x0010 (RPL: 0)
+vcpu-0 ERROR:   TR: 0x0018 (RPL: 0)
 vcpu-0 ERROR: Host FS Base: 0x0000000000000000
 vcpu-0 ERROR: Host GS Base: 0x0000000000000000
-vcpu-0 ERROR: Host TR Base: 0x000000000fbb9f80
-vcpu-0 ERROR: Host GDTR base: 0x0000000009738838
+vcpu-0 ERROR: Host TR Base: 0x000000000fbbc060
+vcpu-0 ERROR: Host GDTR base: 0x0000000009734928
 vcpu-0 ERROR: Host IDTR base: 0x000000000fb53460
 vcpu-0 ERROR: Host IA32_SYSENTER_CS: 0x0000000000000000
 vcpu-0 ERROR: Host IA32_SYSENTER_ESP: 0x0000000000000000
@@ -109,13 +155,71 @@ vcpu-0 ERROR: Host IA32_EFER: 0x0000000000000500
 vcpu-0 ERROR:   LME (Long Mode Enable): true
 vcpu-0 ERROR:   LMA (Long Mode Active): true
 vcpu-0 ERROR: Host Address Space Size (64-bit mode): true
-vcpu-0 ERROR: === EPT TRANSLATION CHECK ===
-vcpu-0 ERROR: Verifying EPT translation for guest RIP: 0x96f5000
-vcpu-0 ERROR: EPT PML4 base: 0x993d000
-vcpu-0 ERROR:   SUCCESS: EPT translates guest PA 0x96f5000 -> host PA 0x96f5000
-vcpu-0 ERROR:   First 16 bytes at host PA: [f4, f4, eb, fd, 48, 89, 01, 48, 89, 49, 08, 48, 89, 51, 10, 48]
-vcpu-0 ERROR:   Expected HLT instruction (0xF4) at start
-vcpu-0 ERROR: === ABOUT TO CALL launch_vm ===
-vcpu-0 ERROR: launch_vm function address: 0x96f505b
-vcpu-0 ERROR: guest_registers address: 0x9b40000
-vcpu-0 ERROR: has_launched value: false
+vcpu-0 DEBUG: EPT translates guest RIP 0x96e8000 -> host PA 0x96e8000
+vcpu-0 DEBUG: EPT translates guest RSP 0xffca528 successfully
+vcpu-0 DEBUG: === Verifying Guest IDT ===
+vcpu-0 DEBUG: Guest IDTR: base=0xfb53460, limit=0xfff
+vcpu-0 DEBUG: ✓ Guest IDTR base translates to host PA 0xfb53460
+vcpu-0 DEBUG: First IDT entry: 0xfb48e000018d6d0
+vcpu-0 DEBUG: Second IDT entry: 0x0
+vcpu-0 DEBUG: Guest RIP bytes: [0f, 0b, f4, f4, eb, fa, 66, 2e, 0f, 1f, 84, 00, 00, 00, 00, 00]
+vcpu-0 DEBUG: ⚠ Guest RIP first byte: 0x0f (not HLT)
+vcpu-0 DEBUG: Guest CR0: 0x80000033
+vcpu-0 DEBUG: Guest CR4: 0x668
+vcpu-0 DEBUG: Guest RIP: 0x96e8000
+vcpu-0 DEBUG: Guest RSP: 0xffca528
+vcpu-0 DEBUG: Guest RFLAGS: 0x246
+vcpu-0 DEBUG: Host CR0: 0x80010033
+vcpu-0 DEBUG: Host CR3: 0xfc01000
+vcpu-0 DEBUG: Host CR4: 0x2668
+vcpu-0 DEBUG: Host RIP: 0x96e80f7
+vcpu-0 DEBUG: Host RSP: 0xfbc3940
+vcpu-0 DEBUG: Host GDT check:
+vcpu-0 DEBUG:   GDTR base: 0x9734928
+vcpu-0 DEBUG:   CS selector: 0x8 (index 1)
+vcpu-0 DEBUG:   TR selector: 0x18 (index 3)
+vcpu-0 DEBUG:   CS descriptor: 0x00af9b000000ffff
+vcpu-0 DEBUG:   TR descriptor: 0x0f0089bbc0600067 0x0000000000000000
+vcpu-0 DEBUG: All pre-VMLAUNCH checks passed!
+vcpu-0 DEBUG: Verifying guest CR3: 0xfc01000
+vcpu-0 DEBUG: PML4[0] entry: 0xfc02023
+vcpu-0 DEBUG: Verifying guest stack at RSP: 0xffca528
+vcpu-0 DEBUG: ✓ Guest stack-8 (0xffca520) translates to host PA 0xffca520
+vcpu-0 DEBUG: ✓ Guest stack is accessible and writable
+vcpu-0 DEBUG: VMCS is loaded and valid (test read succeeded)
+vcpu-0 DEBUG: Calling launch_vm...
+vcpu-0 DEBUG: Pre-launch marker: 0xdeadbeef
+vcpu-0 DEBUG: Guest RFLAGS before VMLAUNCH: 0x246
+vcpu-0 DEBUG: === LAUNCHING VM ===
+vcpu-0 DEBUG: === FUNCTION ADDRESS MAP ===
+vcpu-0 DEBUG: resume_from_virtualization: 0x96e8000
+vcpu-0 DEBUG: launch_vm:                  0x96e8048
+vcpu-0 DEBUG: vmexit_handler:             0x96e80f7
+vcpu-0 DEBUG: Guest RIP (from VMCS):      0x96e8000
+vcpu-0 DEBUG: Bytes at resume_from_virtualization: [0f, 0b, f4, f4, eb, fa, 66, 2e, 0f, 1f, 84, 00, 00, 00, 00, 00, 66, 2e, 0f, 1f, 84, 00, 00, 00, 00, 00, 66, 2e, 0f, 1f, 84, 00]
+vcpu-0 DEBUG: Bytes at launch_vm:                  [57, 56, 53, 55, 41, 54, 41, 55, 41, 56, 41, 57, 48, 8b, 4c, 24, 30, 48, 85, c9, 75, 45, 4c, 8b, 44, 24, 38, 49, 8b, 00, 49, 8b]
+vcpu-0 DEBUG: Bytes at vmexit_handler:             [50, 52, 66, ba, f8, 03, b0, 56, ee, b0, 45, ee, b0, 58, ee, b0, 21, ee, 5a, 58, 50, 53, 51, 52, 56, 57, 55, 41, 50, 41, 51, 41]
+vcpu-0 DEBUG: Bytes at Guest RIP:                  [0f, 0b, f4, f4, eb, fa, 66, 2e, 0f, 1f, 84, 00, 00, 00, 00, 00, 66, 2e, 0f, 1f, 84, 00, 00, 00, 00, 00, 66, 2e, 0f, 1f, 84, 00]
+vcpu-0 DEBUG: === ADDRESS ANALYSIS ===
+vcpu-0 DEBUG: ✓ Guest RIP points to resume_from_virtualization
+vcpu-0 DEBUG: === BYTE PATTERN ANALYSIS ===
+vcpu-0 DEBUG: Guest RIP bytes match resume_from_virtualization: true
+vcpu-0 DEBUG: Guest RIP bytes match launch_vm:                  false
+vcpu-0 DEBUG: Guest RIP bytes match vmexit_handler:             false
+vcpu-0 DEBUG: === INSTRUCTION ANALYSIS ===
+vcpu-0 DEBUG: === GUEST REGISTERS STRUCTURE ===
+vcpu-0 DEBUG: GuestRegisters pointer: 0x9b3b000
+vcpu-0 DEBUG:   RIP in struct: 0x96e8000
+vcpu-0 DEBUG:   RIP in VMCS:   0x96e8000
+vcpu-0 DEBUG: Diagnostics complete. Proceeding with vmlaunch...
+vcpu-0 DEBUG: has_launched = false
+vcpu-0 DEBUG: launched_value being passed to asm = 0x0
+LAUNvcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=0
+vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x206 (IF=true, TF=false)
+VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
+vcpu-0 DEBUG: 🎉 launch_vm RETURNED! flags_raw = 0x0
+vcpu-0 DEBUG: launch_vm returned, RFLAGS = 0x0
+vcpu-0 DEBUG: VMLAUNCH succeeded! VM entered and exited successfully.
+vcpu-0 DEBUG: VM-exit: raw EXIT_REASON = 0x80000021
+vcpu-0 INFO: VM-exit: VmEntryFailureInvalidGuestState
+vcpu-0 DEBUG: VM exit reason: VmEntryFailureInvalidGuestState

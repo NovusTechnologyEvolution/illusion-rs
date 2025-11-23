@@ -8,18 +8,34 @@ use {
 };
 
 // Assembly stub for guest resume point
+// CRITICAL: This must be properly isolated from other functions
 global_asm!(
     r#"
     .globl resume_from_virtualization
-resume_from_virtualization:
-    // Simplest possible code: just HLT immediately
-    // HLT will cause a VM-exit which we can handle
-    hlt
     
-    // If we return from the HLT (after VMRESUME), loop forever
-2:
+    // Align to ensure this function doesn't get merged with others
+    .align 64
+    
+resume_from_virtualization:
+    // UD2 (undefined instruction) causes immediate #UD exception VM-exit
+    // This is more reliable than HLT for testing
+    ud2
+    
+    // If we somehow continue past UD2, infinite loop with HLT
     hlt
-    jmp 2b
+    hlt
+    jmp resume_from_virtualization
+    
+    // Add padding to ensure this function is isolated
+    .align 64
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
     "#
 );
 
@@ -32,7 +48,9 @@ unsafe extern "C" {
 unsafe fn virtual_to_physical(virt_addr: u64) -> u64 {
     // Read CR3 to get the page table base
     let cr3: u64;
-    core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+    }
 
     // Page table walk
     const BASE_PAGE_SHIFT: u64 = 12;
@@ -46,7 +64,7 @@ unsafe fn virtual_to_physical(virt_addr: u64) -> u64 {
     // PML4 entry
     let pml4_base = (cr3 >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
     let pml4_table = pml4_base as *const u64;
-    let pml4_entry = *pml4_table.add(pml4_index as usize);
+    let pml4_entry = unsafe { *pml4_table.add(pml4_index as usize) };
 
     if (pml4_entry & 1) == 0 {
         error!("PML4 entry not present for vaddr {:#x}", virt_addr);
@@ -56,7 +74,7 @@ unsafe fn virtual_to_physical(virt_addr: u64) -> u64 {
     // PDPT entry
     let pdpt_base = (pml4_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
     let pdpt_table = pdpt_base as *const u64;
-    let pdpt_entry = *pdpt_table.add(pdpt_index as usize);
+    let pdpt_entry = unsafe { *pdpt_table.add(pdpt_index as usize) };
 
     if (pdpt_entry & 1) == 0 {
         error!("PDPT entry not present for vaddr {:#x}", virt_addr);
@@ -73,7 +91,7 @@ unsafe fn virtual_to_physical(virt_addr: u64) -> u64 {
     // PD entry
     let pd_base = (pdpt_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
     let pd_table = pd_base as *const u64;
-    let pd_entry = *pd_table.add(pd_index as usize);
+    let pd_entry = unsafe { *pd_table.add(pd_index as usize) };
 
     if (pd_entry & 1) == 0 {
         error!("PD entry not present for vaddr {:#x}", virt_addr);
@@ -90,7 +108,7 @@ unsafe fn virtual_to_physical(virt_addr: u64) -> u64 {
     // PT entry (4KB page)
     let pt_base = (pd_entry >> BASE_PAGE_SHIFT) << BASE_PAGE_SHIFT;
     let pt_table = pt_base as *const u64;
-    let pt_entry = *pt_table.add(pt_index as usize);
+    let pt_entry = unsafe { *pt_table.add(pt_index as usize) };
 
     if (pt_entry & 1) == 0 {
         error!("PT entry not present for vaddr {:#x}", virt_addr);

@@ -12,7 +12,8 @@ use {
     x86::{
         dtables::DescriptorTablePointer,
         segmentation::{
-            BuildDescriptor, CodeSegmentType, Descriptor, DescriptorBuilder, GateDescriptorBuilder, SegmentDescriptorBuilder, SegmentSelector, cs,
+            BuildDescriptor, CodeSegmentType, DataSegmentType, Descriptor, DescriptorBuilder, GateDescriptorBuilder, SegmentDescriptorBuilder,
+            SegmentSelector, cs,
         },
     },
 };
@@ -75,6 +76,9 @@ impl Descriptors {
             tss: TaskStateSegment::default(),
         };
 
+        // Fix up the TSS base to point to the actual location after struct initialization
+        descriptors.tss.base = &descriptors.tss.segment as *const _ as u64;
+
         // Append the TSS descriptor. Push extra 0 as it is 16 bytes.
         // See: 3.5.2 Segment Descriptor Tables in IA-32e Mode
         let tr_index = descriptors.gdt.len() as u16;
@@ -110,14 +114,26 @@ impl Descriptors {
             tss: TaskStateSegment::default(),
         };
 
-        descriptors.gdt.push(0);
-        descriptors.gdt.push(Self::code_segment_descriptor().as_u64());
-        descriptors.gdt.push(Self::task_segment_descriptor(&descriptors.tss).as_u64());
-        descriptors.gdt.push(0);
+        // CRITICAL: Fix up the TSS base to point to the actual location
+        // This must be done AFTER the Descriptors struct is in its final location
+        descriptors.tss.base = &descriptors.tss.segment as *const _ as u64;
+
+        log::debug!("TSS base address: {:#018x}", descriptors.tss.base);
+        log::debug!("TSS limit: {:#018x}", descriptors.tss.limit);
+
+        // Build the GDT with proper segment descriptors
+        descriptors.gdt.push(0); // Index 0: NULL descriptor
+        descriptors.gdt.push(Self::code_segment_descriptor().as_u64()); // Index 1: Code segment (selector 0x08)
+        descriptors.gdt.push(Self::data_segment_descriptor().as_u64()); // Index 2: Data segment (selector 0x10)
+
+        let tss_desc = Self::task_segment_descriptor(&descriptors.tss).as_u64();
+        log::debug!("TSS descriptor low: {:#018x}", tss_desc);
+        descriptors.gdt.push(tss_desc); // Index 3: TSS (selector 0x18)
+        descriptors.gdt.push(0); // Index 4: TSS high part (64-bit TSS is 16 bytes)
 
         descriptors.gdtr = DescriptorTablePointer::new_from_slice(&descriptors.gdt);
-        descriptors.cs = SegmentSelector::new(1, x86::Ring::Ring0);
-        descriptors.tr = SegmentSelector::new(2, x86::Ring::Ring0);
+        descriptors.cs = SegmentSelector::new(1, x86::Ring::Ring0); // CS = 0x08
+        descriptors.tr = SegmentSelector::new(3, x86::Ring::Ring0); // TR = 0x18
 
         // Initialize the IDT with current IDT entries for the host
         descriptors.idt = Self::copy_current_idt();
@@ -138,11 +154,21 @@ impl Descriptors {
 
     /// Constructs a code segment descriptor for use in the GDT.
     fn code_segment_descriptor() -> Descriptor {
-        DescriptorBuilder::code_descriptor(0, u32::MAX, CodeSegmentType::ExecuteAccessed)
+        DescriptorBuilder::code_descriptor(0, u32::MAX, CodeSegmentType::ExecuteReadAccessed)
             .present()
             .dpl(x86::Ring::Ring0)
             .limit_granularity_4kb()
             .l()
+            .finish()
+    }
+
+    /// Constructs a data segment descriptor for use in the GDT.
+    fn data_segment_descriptor() -> Descriptor {
+        DescriptorBuilder::data_descriptor(0, u32::MAX, DataSegmentType::ReadWriteAccessed)
+            .present()
+            .dpl(x86::Ring::Ring0)
+            .limit_granularity_4kb()
+            .db()
             .finish()
     }
 
@@ -183,9 +209,12 @@ pub struct TaskStateSegment {
 impl Default for TaskStateSegment {
     fn default() -> Self {
         let segment = TaskStateSegmentRaw([0; 104]);
-        let base = &segment as *const TaskStateSegmentRaw as u64;
+        // CRITICAL: Don't calculate base address here!
+        // The struct will be moved, so the address calculated here will be wrong.
+        // The base will be fixed up in initialize_for_host/guest after the struct
+        // is in its final location.
         Self {
-            base,
+            base: 0, // Will be fixed up later
             limit: size_of_val(&segment) as u64 - 1,
             ar: 0x8b00,
             segment,

@@ -36,7 +36,7 @@ use {
         },
         windows::eprocess::ProcessInformation,
     },
-    alloc::{boxed::Box, vec::Vec},
+    alloc::boxed::Box,
     log::*,
     x86::{
         msr::IA32_VMX_EPT_VPID_CAP,
@@ -92,6 +92,7 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
 
     trace!("VMCS Dump: {:#x?}", vm.vmcs_region);
 
+    #[allow(unexpected_cfgs)]
     #[cfg(feature = "hide_hv_with_ept")]
     {
         debug!("Hiding hypervisor memory with selective exclusions...");
