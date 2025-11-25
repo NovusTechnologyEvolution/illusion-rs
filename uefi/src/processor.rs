@@ -7,8 +7,8 @@ use {
     uefi::{Result, boot, proto::pi::mp::MpServices},
 };
 
-// Assembly stub for guest resume point
-// CRITICAL: This must be properly isolated from other functions
+// Assembly stub for guest resume point - ONLY used for debugging now
+// The actual guest will resume at the original captured RIP
 global_asm!(
     r#"
     .globl resume_from_virtualization
@@ -149,21 +149,32 @@ fn start_hypervisor_on_this_cpu() {
     if !already {
         debug!("virtualizing CPU …");
 
-        // CRITICAL FIX: Convert virtual address to physical address
-        // With guest paging disabled, guest RIP must be a guest physical address
-        let resume_virt = resume_from_virtualization as u64;
-        let resume_phys = unsafe { virtual_to_physical(resume_virt) };
+        // The original RIP captured by capture_registers is the return address
+        // from whoever called start_hypervisor_on_this_cpu. This is where the
+        // guest should resume after virtualization.
+        let original_rip = regs.rip;
+        debug!("Original captured RIP (return address): {:#x}", original_rip);
 
-        debug!("resume_from_virtualization virtual: {:#x}", resume_virt);
-        debug!("resume_from_virtualization physical: {:#x}", resume_phys);
+        // IMPORTANT: We keep the original RIP! The guest will resume exactly
+        // where it was when capture_registers was called.
+        //
+        // Previously we were overwriting regs.rip with resume_from_virtualization
+        // which caused problems because after the UD2 test stub, the guest would
+        // try to execute hypervisor code.
+        //
+        // Now the guest resumes at the original UEFI return address.
 
-        // Set guest RIP to the PHYSICAL address
-        regs.rip = resume_phys;
+        // CRITICAL: Set RAX to 1 so that when the guest resumes, capture_registers
+        // appears to return `true` (already virtualized). This prevents the guest
+        // from trying to virtualize again.
+        //
+        // The capture_registers function returns bool via RAX:
+        //   - 0 = not yet virtualized (first call)
+        //   - 1 = already virtualized (returning from VM)
+        regs.rax = 1;
 
-        // Set RAX to 0 for the initial launch
-        regs.rax = 0;
-
-        debug!("Guest will resume at RIP (physical): {:#x}", regs.rip);
+        debug!("Guest will resume at RIP: {:#x}", regs.rip);
+        debug!("Guest RSP: {:#x}", regs.rsp);
 
         virtualize::virtualize_system(&regs, landing_ptr());
     } else {

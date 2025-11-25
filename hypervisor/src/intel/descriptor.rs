@@ -79,10 +79,18 @@ impl Descriptors {
         // Fix up the TSS base to point to the actual location after struct initialization
         descriptors.tss.base = &descriptors.tss.segment as *const _ as u64;
 
+        // NOTE: Do NOT modify IDT entries! They have a completely different format than GDT entries.
+        // IDT entries are Interrupt/Trap Gate Descriptors, not segment descriptors.
+        // Just copy them as-is from the current IDT.
+
         // Append the TSS descriptor. Push extra 0 as it is 16 bytes.
         // See: 3.5.2 Segment Descriptor Tables in IA-32e Mode
         let tr_index = descriptors.gdt.len() as u16;
-        descriptors.gdt.push(Self::task_segment_descriptor(&descriptors.tss).as_u64());
+
+        // CRITICAL: Create TSS descriptor with type 0xB (Busy TSS) for VMCS
+        // VMX requires that the guest TR descriptor in the GDT has type 0xB
+        let tss_desc = Self::task_segment_descriptor_busy(&descriptors.tss);
+        descriptors.gdt.push(tss_desc.as_u64());
         descriptors.gdt.push(0);
 
         descriptors.gdtr = DescriptorTablePointer::new_from_slice(&descriptors.gdt);
@@ -126,7 +134,9 @@ impl Descriptors {
         descriptors.gdt.push(Self::code_segment_descriptor().as_u64()); // Index 1: Code segment (selector 0x08)
         descriptors.gdt.push(Self::data_segment_descriptor().as_u64()); // Index 2: Data segment (selector 0x10)
 
-        let tss_desc = Self::task_segment_descriptor(&descriptors.tss).as_u64();
+        // CRITICAL: For host, create Available TSS (type 0x9) because we'll use LTR
+        // LTR instruction expects type 0x9 and will automatically change it to 0xB
+        let tss_desc = Self::task_segment_descriptor_available(&descriptors.tss).as_u64();
         log::debug!("TSS descriptor low: {:#018x}", tss_desc);
         descriptors.gdt.push(tss_desc); // Index 3: TSS (selector 0x18)
         descriptors.gdt.push(0); // Index 4: TSS high part (64-bit TSS is 16 bytes)
@@ -136,6 +146,8 @@ impl Descriptors {
         descriptors.tr = SegmentSelector::new(3, x86::Ring::Ring0); // TR = 0x18
 
         // Initialize the IDT with current IDT entries for the host
+        // NOTE: Do NOT modify IDT entries! They are Interrupt/Trap Gate Descriptors
+        // with a completely different format than segment descriptors.
         descriptors.idt = Self::copy_current_idt();
         descriptors.idtr = DescriptorTablePointer::new_from_slice(&descriptors.idt);
 
@@ -144,12 +156,93 @@ impl Descriptors {
         descriptors
     }
 
-    /// Builds a descriptor for the Task State Segment (TSS).
-    fn task_segment_descriptor(tss: &TaskStateSegment) -> Descriptor {
-        <DescriptorBuilder as GateDescriptorBuilder<u32>>::tss_descriptor(tss.base, tss.limit, true)
+    /// Builds an Available TSS descriptor (type 0x9) for use with LTR instruction.
+    ///
+    /// This is used for the HOST because LTR requires type 0x9 and will automatically
+    /// change it to 0xB when it loads the TR.
+    fn task_segment_descriptor_available(tss: &TaskStateSegment) -> Descriptor {
+        let desc: Descriptor = <DescriptorBuilder as GateDescriptorBuilder<u32>>::tss_descriptor(tss.base, tss.limit, true)
             .present()
             .dpl(x86::Ring::Ring0)
-            .finish()
+            .finish();
+
+        let desc_value = desc.as_u64();
+        let mut bytes = desc_value.to_le_bytes();
+
+        // Fix G bit for byte-granular limit
+        let byte6 = bytes[6];
+        let limit_high = byte6 & 0x0F;
+        let flags = (byte6 >> 4) & 0x0F;
+        let fixed_flags = flags & 0b0001; // Keep only AVL, clear G/D/B/L
+        bytes[6] = limit_high | (fixed_flags << 4);
+
+        // Keep type as 0x9 (Available TSS) - LTR will change it to 0xB
+        let fixed_desc_value = u64::from_le_bytes(bytes);
+        unsafe { core::mem::transmute::<u64, Descriptor>(fixed_desc_value) }
+    }
+
+    /// Builds a Busy TSS descriptor (type 0xB) for VMCS guest state.
+    ///
+    /// This is used for the GUEST because VMX requires the guest TR descriptor
+    /// in the GDT to have type 0xB (Busy TSS) to match the TR_ACCESS_RIGHTS
+    /// field in the VMCS.
+    fn task_segment_descriptor_busy(tss: &TaskStateSegment) -> Descriptor {
+        let desc: Descriptor = <DescriptorBuilder as GateDescriptorBuilder<u32>>::tss_descriptor(tss.base, tss.limit, true)
+            .present()
+            .dpl(x86::Ring::Ring0)
+            .finish();
+
+        let desc_value = desc.as_u64();
+        let mut bytes = desc_value.to_le_bytes();
+
+        log::debug!("TSS descriptor bytes BEFORE: {:02x?}", bytes);
+        log::debug!("TSS descriptor value BEFORE: {:#018x}", desc_value);
+
+        // Byte 6 contains both limit high (lower nibble) and flags (upper nibble)
+        let byte6 = bytes[6];
+        let limit_high = byte6 & 0x0F;
+        let flags = (byte6 >> 4) & 0x0F;
+
+        log::debug!("Byte 6: {:#04x} (limit_high={:#x}, flags={:#x})", byte6, limit_high, flags);
+        log::debug!("Flags breakdown:");
+        log::debug!("  G (bit 3): {}", (flags >> 3) & 1);
+        log::debug!("  D/B (bit 2): {}", (flags >> 2) & 1);
+        log::debug!("  L (bit 1): {}", (flags >> 1) & 1);
+        log::debug!("  AVL (bit 0): {}", flags & 1);
+
+        // CRITICAL FIX: For TSS with byte-granular limit (0x67 = 103 bytes), G bit MUST be 0!
+        // Also ensure L=0 and D/B=0 for 64-bit TSS, preserve AVL
+        let fixed_flags = flags & 0b0001; // Keep only AVL (bit 0), clear G, D/B, and L
+        let fixed_byte6 = limit_high | (fixed_flags << 4);
+        bytes[6] = fixed_byte6;
+
+        let byte5_before = bytes[5];
+        log::debug!("Byte 5 (access byte) BEFORE modification: {:#04x}", byte5_before);
+        log::debug!("  Type (bits 0-3): {:#x}", byte5_before & 0xF);
+        log::debug!("  S (bit 4): {}", (byte5_before >> 4) & 1);
+        log::debug!("  DPL (bits 5-6): {}", (byte5_before >> 5) & 3);
+        log::debug!("  P (bit 7): {}", (byte5_before >> 7) & 1);
+
+        // CRITICAL FOR GUEST: Change type from 0x9 to 0xB (Busy TSS)
+        // VMX requires guest TR descriptor to have type 0xB
+        let current_type = byte5_before & 0xF;
+        log::debug!("Current TSS type: {:#x}, changing to 0xB (Busy TSS) for VMCS", current_type);
+
+        // Clear type bits (0-3) and set to 0xB
+        let byte5_after = (byte5_before & 0xF0) | 0x0B;
+        bytes[5] = byte5_after;
+
+        log::debug!("Byte 5 (access byte) changed to: {:#04x}", byte5_after);
+        log::debug!("  Type (bits 0-3): {:#x} (0xB = Busy TSS for VMX)", byte5_after & 0xF);
+
+        let fixed_desc_value = u64::from_le_bytes(bytes);
+
+        log::debug!("TSS descriptor bytes AFTER:  {:02x?}", bytes);
+        log::debug!("TSS descriptor value AFTER:  {:#018x}", fixed_desc_value);
+        log::debug!("Fixed byte 6: {:#04x} (limit_high={:#x}, flags={:#x})", fixed_byte6, limit_high, fixed_flags);
+
+        // Reconstruct the descriptor from the modified value
+        unsafe { core::mem::transmute::<u64, Descriptor>(fixed_desc_value) }
     }
 
     /// Constructs a code segment descriptor for use in the GDT.
@@ -216,7 +309,7 @@ impl Default for TaskStateSegment {
         Self {
             base: 0, // Will be fixed up later
             limit: size_of_val(&segment) as u64 - 1,
-            ar: 0x8b00,
+            ar: 0x8b00, // Native AR format: type 0xB in upper byte (like memn0ps original)
             segment,
         }
     }

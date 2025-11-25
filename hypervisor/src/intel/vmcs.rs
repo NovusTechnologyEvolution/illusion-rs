@@ -27,6 +27,16 @@ use {
     x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags},
 };
 
+/// Converts native segment access rights format to VMCS format
+/// Native format (from LAR instruction): type in bits 8-15
+/// VMCS format: type in bits 0-7, with additional flags in bits 8-15
+fn access_rights_from_native(native_ar: u32) -> u32 {
+    // Native format has the access byte in bits 8-15
+    // VMCS format expects it in bits 0-7
+    // For TSS: native_ar = 0x8b00 means access byte 0x8b is in upper byte
+    (native_ar >> 8) & 0xFF
+}
+
 /// Represents the VMCS region in memory.
 ///
 /// The VMCS region is essential for VMX operations on the CPU.
@@ -72,7 +82,6 @@ impl Vmcs {
         let mut guest_cr0 = Cr0::read_raw();
         guest_cr0 |= Cr0Flags::PROTECTED_MODE_ENABLE.bits(); // PE = 1 (required for long mode)
         guest_cr0 |= Cr0Flags::PAGING.bits(); // PG = 1 (required for long mode)
-        guest_cr0 &= !Cr0Flags::WRITE_PROTECT.bits(); // WP = 0 (can be 0 initially)
 
         // Apply VMX fixed bits (CRITICAL for VMLAUNCH success!)
         guest_cr0 = (guest_cr0 & vmx_cr0_fixed1) | vmx_cr0_fixed0;
@@ -80,7 +89,7 @@ impl Vmcs {
         log::debug!("VMX CR0 fixed0: {:#018x}, fixed1: {:#018x}", vmx_cr0_fixed0, vmx_cr0_fixed1);
 
         // CRITICAL FIX: Use actual current CR3, not the empty host_cr3 parameter
-        let mut guest_cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+        let guest_cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
 
         unsafe {
             let pml4_ptr = guest_cr3 as *const u64;
@@ -106,20 +115,10 @@ impl Vmcs {
             log::debug!("Verifying Guest RIP: {:#x}", guest_rip);
             log::debug!("First 16 bytes at Guest RIP: {:02x?}", &rip_bytes[0..16]);
 
-            // Check if it starts with UD2 (0x0F 0x0B) or HLT (0xF4)
-            if rip_bytes[0] == 0x0F && rip_bytes[1] == 0x0B {
-                log::debug!("✓ Guest RIP starts with UD2 (undefined instruction for testing)");
-            } else if rip_bytes[0] == 0xF4 && rip_bytes[1] == 0xF4 {
-                log::debug!("✓ Guest RIP starts with HLT HLT");
-
-                if rip_bytes[2] == 0xEB {
-                    log::debug!("✓ Followed by JMP (HLT loop)");
-                }
-            } else {
-                log::error!("❌ Guest RIP does not start with expected instructions!");
-                log::error!("Expected: 0x0F 0x0B (UD2) or 0xF4 0xF4 (HLT HLT)");
-                log::error!("Got: {:02x?}", &rip_bytes[0..4]);
-            }
+            // Guest RIP should now point to real UEFI code (the return address from
+            // capture_registers). We just log the bytes for debugging - any valid
+            // code is acceptable.
+            log::debug!("Guest will resume at original UEFI return address");
         }
 
         // Same for CR4 - apply VMX fixed bits
@@ -129,13 +128,17 @@ impl Vmcs {
         let mut guest_cr4 = Cr4::read_raw();
         guest_cr4 |= Cr4Flags::PHYSICAL_ADDRESS_EXTENSION.bits(); // PAE = 1 (required for long mode)
 
-        // Apply VMX fixed bits FIRST
+        // CRITICAL FIX: Apply VMX fixed bits and DO NOT clear VMXE!
+        // The VMX specification requires CR4.VMXE = 1 in the guest CR4 field.
+        // Unrestricted Guest does NOT relax this requirement.
+        // To hide VMXE from the guest, we use the CR4 read shadow (set up in control fields).
         guest_cr4 = (guest_cr4 & vmx_cr4_fixed1) | vmx_cr4_fixed0;
 
-        // Then clear VMXE AFTER applying fixed bits (guests cannot use VMX)
-        guest_cr4 &= !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits();
+        // NOTE: We do NOT clear VMXE here anymore! The CR4 read shadow will hide it from the guest.
+        // The actual guest CR4 must have VMXE=1 to satisfy VMX consistency checks.
 
         log::debug!("VMX CR4 fixed0: {:#018x}, fixed1: {:#018x}", vmx_cr4_fixed0, vmx_cr4_fixed1);
+        log::debug!("Guest CR4 (with VMXE per VMX requirements): {:#018x}", guest_cr4);
 
         vmwrite(vmcs::guest::CR0, guest_cr0);
         vmwrite(vmcs::guest::CR3, guest_cr3);
@@ -166,20 +169,30 @@ impl Vmcs {
         log::debug!("Guest EFER (64-bit mode): {:#018x}", guest_efer);
 
         // ---------------------------------------------------------------------
-        // Segment selectors
+        // Segment selectors - use selectors that match the UEFI GDT layout
         // ---------------------------------------------------------------------
-        // CRITICAL: Use selector 0x0008 for CS (64-bit code segment)
-        // The guest descriptor's CS (0x0018) might point to a 32-bit segment in UEFI GDT
-        // Selector 0x0008 (index 1) is the standard 64-bit code segment
-        vmwrite(vmcs::guest::CS_SELECTOR, 0x0008u16);
-        vmwrite(vmcs::guest::SS_SELECTOR, 0x0010u16);
-        vmwrite(vmcs::guest::DS_SELECTOR, 0x0010u16);
-        vmwrite(vmcs::guest::ES_SELECTOR, 0x0010u16);
-        vmwrite(vmcs::guest::FS_SELECTOR, 0x0010u16);
-        vmwrite(vmcs::guest::GS_SELECTOR, 0x0010u16);
+        // From the UEFI GDT dump:
+        //   Entry 0 (0x00): NULL
+        //   Entry 1 (0x08): Data segment
+        //   Entry 2 (0x10): 32-bit Code segment
+        //   Entry 3 (0x18): 64-bit Code segment  ← Use this for CS!
+        //   Entry 4 (0x20): 32-bit Code segment
+        //   Entry 5 (0x28): Data segment
+        //
+        // CRITICAL: CS must point to a 64-bit code segment (0x18), not 0x08 which is Data!
+        vmwrite(vmcs::guest::CS_SELECTOR, 0x0018u16); // 64-bit code segment
+        vmwrite(vmcs::guest::SS_SELECTOR, 0x0008u16); // Data segment
+        vmwrite(vmcs::guest::DS_SELECTOR, 0x0008u16); // Data segment
+        vmwrite(vmcs::guest::ES_SELECTOR, 0x0008u16); // Data segment
+        vmwrite(vmcs::guest::FS_SELECTOR, 0x0008u16); // Data segment
+        vmwrite(vmcs::guest::GS_SELECTOR, 0x0008u16); // Data segment
+
+        // CRITICAL: Do NOT write TR_SELECTOR yet!
+        // Writing the selector causes the processor to reload AR from the GDT.
+        // We'll write it AFTER we set the access rights.
 
         vmwrite(vmcs::guest::LDTR_SELECTOR, 0u16);
-        vmwrite(vmcs::guest::TR_SELECTOR, guest_descriptor.tr.bits());
+        // TR_SELECTOR will be written AFTER TR_ACCESS_RIGHTS (see below)
 
         // ---------------------------------------------------------------------
         // Segment bases - ALL must be initialized
@@ -219,17 +232,27 @@ impl Vmcs {
         // LDTR: Unusable (bit 16 set)
         let ldtr_ar = 0x10000u32;
 
-        // TSS: Available 64-bit TSS (type=1001), P=1, DPL=0
-        let tss_ar = 0x008Bu32;
+        // TR Access Rights: Use access_rights_from_native() like memn0ps original
+        // The tss.ar field contains 0x8b00 (native format with type 0xB in upper byte)
+        // access_rights_from_native() converts it to proper VMCS AR format
+        let tss_ar = access_rights_from_native(guest_descriptor.tss.ar) as u64;
+        log::debug!("Using TR AR from access_rights_from_native: {:#06x}", tss_ar);
 
         vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, data_ar);
         vmwrite(vmcs::guest::CS_ACCESS_RIGHTS, cs_ar);
         vmwrite(vmcs::guest::SS_ACCESS_RIGHTS, data_ar);
         vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, data_ar);
+        vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, data_ar);
         vmwrite(vmcs::guest::FS_ACCESS_RIGHTS, data_ar);
         vmwrite(vmcs::guest::GS_ACCESS_RIGHTS, data_ar);
         vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, ldtr_ar);
         vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, tss_ar);
+
+        // CRITICAL: Write TR_SELECTOR LAST, after TR_ACCESS_RIGHTS is set.
+        // Writing the selector causes Intel processors to validate/reload some AR bits from the GDT.
+        // By writing AR first, then selector, we ensure our 0x18B value sticks.
+        vmwrite(vmcs::guest::TR_SELECTOR, guest_descriptor.tr.bits());
+        log::debug!("Guest TR selector set to: {:#06x} (written AFTER TR_ACCESS_RIGHTS)", guest_descriptor.tr.bits());
 
         log::debug!("=== VERIFYING ALL SEGMENT ACCESS RIGHTS ===");
         log::debug!("ES AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::ES_ACCESS_RIGHTS), data_ar);
@@ -242,10 +265,58 @@ impl Vmcs {
         log::debug!("TR AR: {:#06x} (expected {:#06x})", vmread(vmcs::guest::TR_ACCESS_RIGHTS), tss_ar);
 
         // ---------------------------------------------------------------------
-        // GDTR and IDTR
+        // GDTR and IDTR (GDTR already written above, just write IDTR here)
         // ---------------------------------------------------------------------
         vmwrite(vmcs::guest::GDTR_BASE, guest_descriptor.gdtr.base as u64);
         vmwrite(vmcs::guest::GDTR_LIMIT, guest_descriptor.gdtr.limit as u32);
+
+        // Copy to local variables to avoid packed field reference errors
+        let gdtr_base = guest_descriptor.gdtr.base as u64;
+        let gdtr_limit = guest_descriptor.gdtr.limit;
+        let tr_selector = guest_descriptor.tr.bits();
+        let tr_base = guest_descriptor.tss.base;
+
+        log::debug!("=== GUEST GDTR AND TR CONFIGURATION ===");
+        log::debug!("Guest GDTR base: {:#018x}", gdtr_base);
+        log::debug!("Guest GDTR limit: {:#06x} ({} bytes, {} descriptors max)", gdtr_limit, gdtr_limit + 1, (gdtr_limit + 1) / 8);
+        log::debug!("Guest TR selector: {:#06x} (index {})", tr_selector, tr_selector >> 3);
+        log::debug!("Guest TR base: {:#018x}", tr_base);
+        log::debug!("Guest TR offset in GDT: {:#06x}", (tr_selector & 0xFFF8));
+        log::debug!("Guest TR descriptor end offset: {:#06x} (TSS is 16 bytes)", (tr_selector & 0xFFF8) + 15);
+        log::debug!(
+            "Check: TR end ({:#x}) <= GDTR limit ({:#x})? {}",
+            (tr_selector & 0xFFF8) + 15,
+            gdtr_limit,
+            (tr_selector & 0xFFF8) + 15 <= gdtr_limit
+        );
+
+        // Verify the TSS descriptor in the GDT matches what we expect
+        unsafe {
+            let gdt_ptr = gdtr_base as *const u64;
+            let tr_index = (tr_selector >> 3) as usize;
+            let tss_desc_low = core::ptr::read_volatile(gdt_ptr.add(tr_index));
+            let tss_desc_high = core::ptr::read_volatile(gdt_ptr.add(tr_index + 1));
+            log::debug!("TSS descriptor in guest GDT: {:#018x} {:#018x}", tss_desc_low, tss_desc_high);
+
+            // Decode the descriptor to check the type
+            let desc_type = ((tss_desc_low >> 40) & 0xF) as u8;
+            let desc_present = ((tss_desc_low >> 47) & 1) != 0;
+            let desc_base_low = ((tss_desc_low >> 16) & 0xFFFFFF) as u32;
+            let desc_base_mid = ((tss_desc_low >> 56) & 0xFF) as u32;
+            let desc_base_high = (tss_desc_high & 0xFFFFFFFF) as u32;
+            let desc_base = (desc_base_high as u64) << 32 | (desc_base_mid as u64) << 24 | desc_base_low as u64;
+
+            log::debug!("  Type: {:#x} (should be 0xB for Busy TSS)", desc_type);
+            log::debug!("  Present: {}", desc_present);
+            log::debug!("  Base: {:#018x} (should match TR base {:#018x})", desc_base, tr_base);
+
+            if desc_type != 0xB {
+                log::error!("❌ TSS descriptor type is {:#x}, expected 0xB (Busy TSS)!", desc_type);
+            }
+            if desc_base != tr_base {
+                log::error!("❌ TSS descriptor base {:#x} doesn't match TR base {:#x}!", desc_base, tr_base);
+            }
+        }
 
         let idtr = sidt();
         vmwrite(vmcs::guest::IDTR_BASE, idtr.base as u64);
@@ -287,6 +358,7 @@ impl Vmcs {
         log::debug!("Final Activity State: {:#x}", vmread(vmcs::guest::ACTIVITY_STATE));
         log::debug!("Final Interruptibility: {:#x}", vmread(vmcs::guest::INTERRUPTIBILITY_STATE));
         log::debug!("Final Pending Debug: {:#x}", vmread(vmcs::guest::PENDING_DBG_EXCEPTIONS));
+        log::debug!("Final Guest CR4: {:#x} (VMXE should be set)", vmread(vmcs::guest::CR4));
 
         log::debug!("Guest Registers State setup successfully!");
     }
@@ -410,6 +482,11 @@ impl Vmcs {
             | vmcs::control::EntryControls::IA32E_MODE_GUEST.bits()
             | vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
 
+        log::debug!("Requested ENTRY_CTL bits: {:#010x}", ENTRY_CTL);
+        log::debug!("  LOAD_DEBUG_CONTROLS: {:#x}", vmcs::control::EntryControls::LOAD_DEBUG_CONTROLS.bits());
+        log::debug!("  IA32E_MODE_GUEST: {:#x}", vmcs::control::EntryControls::IA32E_MODE_GUEST.bits());
+        log::debug!("  CONCEAL_VMX_FROM_PT: {:#x}", vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits());
+
         const EXIT_CTL: u64 = (vmcs::control::ExitControls::HOST_ADDRESS_SPACE_SIZE.bits()
             | vmcs::control::ExitControls::SAVE_DEBUG_CONTROLS.bits()
             | vmcs::control::ExitControls::LOAD_IA32_EFER.bits()
@@ -444,18 +521,29 @@ impl Vmcs {
             vmcs::control::CR0_GUEST_HOST_MASK,
             vmx_cr0_fixed0 | !vmx_cr0_fixed1 | Cr0Flags::CACHE_DISABLE.bits() | Cr0Flags::WRITE_PROTECT.bits(),
         );
-        vmwrite(vmcs::control::CR4_GUEST_HOST_MASK, vmx_cr4_fixed0 | !vmx_cr4_fixed1);
+
+        // CRITICAL: Include VMXE in the CR4 mask so we intercept access to it
+        vmwrite(vmcs::control::CR4_GUEST_HOST_MASK, vmx_cr4_fixed0 | !vmx_cr4_fixed1 | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits());
 
         vmwrite(vmcs::control::CR0_READ_SHADOW, Cr0::read_raw());
+
+        // CRITICAL FIX: The CR4 read shadow is what the guest sees when it reads CR4.
+        // We set VMXE=0 in the shadow so the guest thinks VMXE is off, even though
+        // the actual guest CR4 has VMXE=1 (required by VMX).
         vmwrite(vmcs::control::CR4_READ_SHADOW, Cr4::read_raw() & !Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits());
+
+        log::debug!("CR4 read shadow (guest will see): {:#x}", vmread(vmcs::control::CR4_READ_SHADOW));
+        log::debug!("CR4 guest/host mask: {:#x}", vmread(vmcs::control::CR4_GUEST_HOST_MASK));
 
         vmwrite(vmcs::control::MSR_BITMAPS_ADDR_FULL, msr_bitmap);
 
         vmwrite(0x2000, io_bitmap_a); // IO_BITMAP_A
         vmwrite(0x2002, io_bitmap_b); // IO_BITMAP_B
 
-        vmwrite(vmcs::control::EXCEPTION_BITMAP, 0xFFFFFFFFu32);
-        log::debug!("Exception bitmap set to intercept all exceptions (debugging mode)");
+        // Don't intercept any exceptions - let the guest handle them all natively.
+        // We're no longer using the UD2 test stub, so the guest resumes at the original
+        // UEFI return address and should handle its own exceptions via its IDT.
+        vmwrite(vmcs::control::EXCEPTION_BITMAP, 0u32);
 
         vmwrite(0x4016, 0u32); // VM_ENTRY_INTR_INFO
         vmwrite(0x4018, 0u32); // VM_ENTRY_EXCEPTION_ERROR_CODE

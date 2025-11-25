@@ -135,6 +135,62 @@ pub fn diagnose_guest_state_validity() {
     error!("Primary controls:  0x{:08x}", primary_controls as u32);
     error!("Secondary controls: 0x{:08x}", secondary_controls as u32);
     error!("Unrestricted Guest: {}", unrestricted_guest);
+
+    // --- TR (Task Register) detailed check ---------------------------------
+    let tr_selector = vmread(vmcs::guest::TR_SELECTOR) as u16;
+    let tr_base = vmread(vmcs::guest::TR_BASE);
+    let tr_limit = vmread(vmcs::guest::TR_LIMIT);
+    let tr_ar = vmread(vmcs::guest::TR_ACCESS_RIGHTS) as u32;
+
+    error!("Guest TR (Task Register):");
+    error!("  Selector: 0x{:04x}", tr_selector);
+    error!("  Base: 0x{:016x}", tr_base);
+    error!("  Limit: 0x{:08x}", tr_limit);
+    error!("  Access Rights: 0x{:04x}", tr_ar);
+
+    let tr_type = tr_ar & 0xF;
+    let tr_s = (tr_ar >> 4) & 1;
+    let tr_dpl = (tr_ar >> 5) & 3;
+    let tr_p = (tr_ar >> 7) & 1;
+    let tr_accessed = (tr_ar >> 8) & 1;
+    let tr_avl = (tr_ar >> 12) & 1;
+    let tr_l = (tr_ar >> 13) & 1;
+    let tr_db = (tr_ar >> 14) & 1;
+    let tr_g = (tr_ar >> 15) & 1;
+    let tr_unusable = (tr_ar >> 16) & 1;
+
+    error!("    Type: 0x{:x} (should be 0xB for busy 64-bit TSS)", tr_type);
+    error!("    S (descriptor type): {} (should be 0 for system)", tr_s);
+    error!("    DPL: {}", tr_dpl);
+    error!("    P (present): {} (should be 1)", tr_p);
+    error!("    Accessed (bit 8): {} (NOTE: Not required to be 1 in VMCS AR field)", tr_accessed);
+    error!("    AVL: {}", tr_avl);
+    error!("    L (64-bit): {}", tr_l);
+    error!("    D/B: {}", tr_db);
+    error!("    G (granularity): {} (should be 0 for byte-granular limit)", tr_g);
+    error!("    Unusable: {} (should be 0)", tr_unusable);
+
+    // Critical checks per Intel SDM Vol 3D, Section 27.3.1.2
+    // NOTE: With unrestricted guest enabled, TR requirements are more relaxed
+    if tr_type != 0xB && tr_type != 0x3 && tr_type != 0x9 {
+        error!("    ERROR: TR type should be 0x3 (16-bit busy), 0x9 (available), or 0xB (busy 64-bit TSS)!");
+    }
+    if tr_s != 0 {
+        error!("    ERROR: TR S bit must be 0 (system descriptor)!");
+    }
+    if tr_p != 1 {
+        error!("    ERROR: TR present bit must be 1!");
+    }
+    // NOTE: Bit 8 (accessed) in the VMCS AR field is NOT the same as the descriptor accessed bit
+    // Intel does NOT require bit 8 to be set in the VMCS TR_ACCESS_RIGHTS field
+    // The requirement is only that the TSS TYPE be correct (0xB for busy TSS in IA-32e mode)
+    if tr_unusable != 0 {
+        error!("    ERROR: TR must be usable (bit 16 must be 0)!");
+    }
+    // For a TSS with byte-granular limit (like 0x67 = 103 bytes), G should be 0
+    if tr_limit < 4096 && tr_g != 0 {
+        error!("    WARNING: TR limit is {} bytes but G bit is set (implies 4KB scaling)", tr_limit);
+    }
 }
 
 /// Dump a minimal host-state snapshot from the VMCS.
