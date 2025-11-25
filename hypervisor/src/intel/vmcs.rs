@@ -493,6 +493,8 @@ impl Vmcs {
             | vmcs::control::ExitControls::LOAD_IA32_PAT.bits()
             | vmcs::control::ExitControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
 
+        // Don't intercept external interrupts - let guest handle them naturally
+        // (We enabled this for debugging but it causes an interrupt storm since we don't re-inject)
         const PINBASED_CTL: u64 = 0;
 
         vmwrite(vmcs::control::PRIMARY_PROCBASED_EXEC_CONTROLS, adjust_vmx_controls(VmxControl::ProcessorBased, PRIMARY_CTL));
@@ -540,9 +542,9 @@ impl Vmcs {
         vmwrite(0x2000, io_bitmap_a); // IO_BITMAP_A
         vmwrite(0x2002, io_bitmap_b); // IO_BITMAP_B
 
-        // Don't intercept any exceptions - let the guest handle them all natively.
-        // We're no longer using the UD2 test stub, so the guest resumes at the original
-        // UEFI return address and should handle its own exceptions via its IDT.
+        // Don't intercept exceptions - let the guest handle them
+        // The triple fault we saw (SS=0, CR3 changed) is during Windows boot
+        // when the bootloader switches to its own GDT/IDT. This is normal.
         vmwrite(vmcs::control::EXCEPTION_BITMAP, 0u32);
 
         vmwrite(0x4016, 0u32); // VM_ENTRY_INTR_INFO

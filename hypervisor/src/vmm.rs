@@ -34,7 +34,6 @@ use {
                 xsetbv::handle_xsetbv,
             },
         },
-        windows::eprocess::ProcessInformation,
     },
     alloc::boxed::Box,
     log::*,
@@ -78,50 +77,121 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
     match vm.init(guest_registers) {
         Ok(_) => debug!("VM initialized"),
         Err(e) => panic!("Failed to initialize VM: {:?}", e),
-    }
+    };
 
     match vm.activate_vmxon() {
         Ok(_) => debug!("VMX enabled"),
         Err(e) => panic!("Failed to enable VMX: {:?}", e),
-    }
+    };
 
     match vm.activate_vmcs() {
         Ok(_) => debug!("VMCS activated"),
         Err(e) => panic!("Failed to activate VMCS: {:?}", e),
-    }
+    };
 
-    trace!("VMCS Dump: {:#x?}", vm.vmcs_region);
-
+    // Enable EPT to hide hypervisor memory
     #[cfg(feature = "hide_hv_with_ept")]
-    {
-        debug!("Hiding hypervisor memory... (NOTE: EPT HOOKS WON'T WORK IF THIS IS ENABLED UNLESS SHADOW PAGES ARE EXCLUDED)");
-        let mut hook_manager = crate::intel::hooks::hook_manager::SHARED_HOOK_MANAGER.lock();
-        hook_manager.print_allocated_memory();
-        match hook_manager.hide_hypervisor_memory(&mut vm, crate::intel::ept::AccessType::READ_WRITE_EXECUTE) {
-            Ok(_) => debug!("Hypervisor memory hidden"),
-            Err(e) => panic!("Failed to hide hypervisor memory: {:?}", e),
-        };
-    }
+    match hide_hv_with_ept(&mut vm) {
+        Ok(_) => debug!("Hypervisor hidden from guest"),
+        Err(e) => panic!("Failed to hide hypervisor: {:?}", e),
+    };
+
+    // Counter to limit logging spam
+    static mut EXIT_COUNT: u64 = 0;
+    static mut LAST_EXIT_REASON: u64 = 0;
+    static mut LAST_RIP: u64 = 0;
 
     info!("Launching the VM until a vmexit occurs...");
 
     loop {
         if let Ok(basic_exit_reason) = vm.run() {
-            // Log the VM exit reason along with the current process information, only if available
-            if let Some(p) = ProcessInformation::get_current_process_info() {
-                debug!(
-                    "VM exit reason: {:?}, ImageFileName: {}, UniqueProcessId: {}, DirectoryTableBase: {:#x}",
-                    basic_exit_reason, p.file_name, p.unique_process_id, p.directory_table_base
-                );
-            } else {
-                if basic_exit_reason != VmxBasicExitReason::Cpuid {
-                    debug!("VM exit reason: {:?}", basic_exit_reason);
-                }
+            // Increment exit counter
+            let count = unsafe {
+                EXIT_COUNT += 1;
+                EXIT_COUNT
+            };
+
+            let current_rip = vmread(guest::RIP);
+
+            // Track last exit for debugging crashes
+            unsafe {
+                LAST_EXIT_REASON = basic_exit_reason as u64;
+                LAST_RIP = current_rip;
+            }
+
+            // Log only milestones to reduce output
+            if count == 10 {
+                info!("VM-exit milestone: 10 exits");
+            } else if count == 100 {
+                info!("VM-exit milestone: 100 exits");
+            } else if count == 1000 {
+                info!("VM-exit milestone: 1,000 exits");
+            } else if count == 10000 {
+                info!("VM-exit milestone: 10,000 exits");
+            } else if count % 100000 == 0 {
+                info!("VM-exit milestone: {} exits (last: {:?} @ {:#x})", count, basic_exit_reason, current_rip);
             }
 
             let exit_type = match basic_exit_reason {
                 // 0
-                VmxBasicExitReason::ExceptionOrNmi => handle_exception(&mut vm),
+                VmxBasicExitReason::ExceptionOrNmi => {
+                    // Get exception info
+                    let intr_info = vmread(ro::VMEXIT_INTERRUPTION_INFO);
+                    let vector = intr_info & 0xFF;
+                    let error_code = if (intr_info & (1 << 11)) != 0 {
+                        Some(vmread(ro::VMEXIT_INTERRUPTION_ERR_CODE))
+                    } else {
+                        None
+                    };
+
+                    // Log important exceptions
+                    match vector {
+                        0 => debug!("Exception: #DE (Divide Error) at RIP={:#x}", current_rip),
+                        6 => debug!("Exception: #UD (Invalid Opcode) at RIP={:#x}", current_rip),
+                        8 => error!("Exception: #DF (Double Fault) at RIP={:#x}, error={:?}", current_rip, error_code),
+                        13 => {
+                            error!("Exception: #GP (General Protection) at RIP={:#x}, error={:#x?}", current_rip, error_code);
+                            error!("  SS={:#x}, CS={:#x}, RSP={:#x}", vmread(guest::SS_SELECTOR), vmread(guest::CS_SELECTOR), vmread(guest::RSP));
+                        }
+                        14 => debug!(
+                            "Exception: #PF (Page Fault) at RIP={:#x}, error={:?}, CR2={:#x}",
+                            current_rip,
+                            error_code,
+                            vmread(ro::EXIT_QUALIFICATION)
+                        ),
+                        _ => debug!("Exception: vector {} at RIP={:#x}", vector, current_rip),
+                    }
+
+                    handle_exception(&mut vm)
+                }
+                // 1
+                VmxBasicExitReason::ExternalInterrupt => {
+                    // Should not happen with external interrupt exiting disabled
+                    log::warn!("Unexpected external interrupt exit!");
+                    ExitType::Continue
+                }
+                // 2
+                VmxBasicExitReason::TripleFault => {
+                    error!("=== TRIPLE FAULT ===");
+                    error!("Exit count: {}", count);
+                    error!("Guest RIP: {:#x}", current_rip);
+                    error!("Guest RSP: {:#x}", vmread(guest::RSP));
+                    error!("Guest CR0: {:#x}", vmread(guest::CR0));
+                    error!("Guest CR3: {:#x}", vmread(guest::CR3));
+                    error!("Guest CR4: {:#x}", vmread(guest::CR4));
+                    error!("Guest RFLAGS: {:#x}", vmread(guest::RFLAGS));
+                    error!("Guest CS: {:#x}", vmread(guest::CS_SELECTOR));
+                    error!("Guest SS: {:#x}", vmread(guest::SS_SELECTOR));
+                    error!("Guest TR: {:#x}", vmread(guest::TR_SELECTOR));
+                    error!("Guest TR base: {:#x}", vmread(guest::TR_BASE));
+                    error!("Guest GDTR base: {:#x}", vmread(guest::GDTR_BASE));
+                    error!("Guest GDTR limit: {:#x}", vmread(guest::GDTR_LIMIT));
+                    error!("Guest IDTR base: {:#x}", vmread(guest::IDTR_BASE));
+                    error!("Guest IDTR limit: {:#x}", vmread(guest::IDTR_LIMIT));
+                    error!("Interruptibility: {:#x}", vmread(guest::INTERRUPTIBILITY_STATE));
+                    error!("Activity state: {:#x}", vmread(guest::ACTIVITY_STATE));
+                    panic!("Triple fault VM exit!");
+                }
                 // 3
                 VmxBasicExitReason::InitSignal => handle_init_signal(&mut vm.guest_registers),
                 // 4
@@ -161,7 +231,7 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
                 // 32
                 VmxBasicExitReason::Wrmsr => handle_msr_access(&mut vm, MsrAccessType::Write).expect("Failed to handle WRMSR"),
                 // 37
-                VmxBasicExitReason::MonitorTrapFlag => handle_monitor_trap_flag(&mut vm).expect("Failed to handle Monitor Trap Flag"),
+                VmxBasicExitReason::MonitorTrapFlag => handle_monitor_trap_flag(&mut vm).expect("Failed to handle MTF"),
                 // 48
                 VmxBasicExitReason::EptViolation => handle_ept_violation(&mut vm).expect("Failed to handle EPT violation"),
                 // 49
@@ -174,13 +244,23 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
                 VmxBasicExitReason::Invvpid => handle_invvpid(),
                 // 55
                 VmxBasicExitReason::Xsetbv => handle_xsetbv(&mut vm),
-                _ => panic!("Unhandled VM exit reason: {:?}", basic_exit_reason),
+                other => {
+                    error!("=== UNHANDLED VM EXIT ===");
+                    error!("Exit reason: {:?} ({})", other, other as u64);
+                    error!("Exit count: {}", count);
+                    error!("Guest RIP: {:#x}", current_rip);
+                    error!("Guest RSP: {:#x}", vmread(guest::RSP));
+                    error!("Guest RAX: {:#x}", vm.guest_registers.rax);
+                    error!("Exit qualification: {:#x}", vmread(ro::EXIT_QUALIFICATION));
+                    panic!("Unhandled VM exit reason: {:?}", other);
+                }
             };
 
             if exit_type == ExitType::IncrementRIP {
                 advance_guest_rip(&mut vm.guest_registers);
             }
         } else {
+            error!("vm.run() failed! Last known RIP: {:#x}", vm.guest_registers.rip);
             panic!("Failed to run the VM");
         }
     }
@@ -195,11 +275,20 @@ pub fn start_hypervisor(guest_registers: &GuestRegisters) -> ! {
 ///
 /// - `guest_registers`: A mutable reference to the guest's general-purpose registers.
 fn advance_guest_rip(guest_registers: &mut GuestRegisters) {
-    // trace!("Advancing guest RIP...");
+    let old_rip = vmread(guest::RIP);
     let len = vmread(ro::VMEXIT_INSTRUCTION_LEN);
-    guest_registers.rip += len;
-    vmwrite(guest::RIP, guest_registers.rip);
-    // trace!("Guest RIP advanced to: {:#x}", vmread(guest::RIP));
+    let new_rip = old_rip + len;
+
+    trace!("Advancing RIP: {:#x} + {} = {:#x}", old_rip, len, new_rip);
+
+    guest_registers.rip = new_rip;
+    vmwrite(guest::RIP, new_rip);
+
+    // Verify the write worked
+    let verify_rip = vmread(guest::RIP);
+    if verify_rip != new_rip {
+        error!("CRITICAL: RIP write failed! Wrote {:#x}, read back {:#x}", new_rip, verify_rip);
+    }
 }
 
 /// Checks if the CPU is supported for hypervisor operation.
@@ -208,120 +297,53 @@ fn advance_guest_rip(guest_registers: &mut GuestRegisters) {
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if the CPU meets all requirements, otherwise returns `Err(HypervisorError)`.
+/// * `Ok(())` - If the CPU is supported.
+/// * `Err(HypervisorError)` - If the CPU is not supported.
 fn check_supported_cpu() -> Result<(), HypervisorError> {
-    /* Intel® 64 and IA-32 Architectures Software Developer's Manual: 24.6 DISCOVERING SUPPORT FOR VMX */
-    has_intel_cpu()?;
-    info!("CPU is Intel");
+    // Check if the CPU is Intel ("GenuineIntel")
+    let cpuid_info = x86::cpuid::CpuId::new();
+    let vendor_info = cpuid_info.get_vendor_info();
 
-    has_vmx_support()?;
-    info!("Virtual Machine Extension (VMX) technology is supported");
+    let is_intel = vendor_info.map(|v| v.as_str() == "GenuineIntel").unwrap_or(false);
 
-    has_mtrr()?;
-    info!("Memory Type Range Registers (MTRRs) are supported");
-
-    check_ept_support()?;
-    info!("Extended Page Tables (EPT) are supported");
-
-    Ok(())
-}
-
-/// Verifies the CPU is from Intel.
-///
-/// # Returns
-///
-/// Returns `Ok(())` if the CPU vendor is GenuineIntel, otherwise `Err(HypervisorError::CPUUnsupported)`.
-fn has_intel_cpu() -> Result<(), HypervisorError> {
-    let cpuid = x86::cpuid::CpuId::new();
-    if let Some(vi) = cpuid.get_vendor_info() {
-        if vi.as_str() == "GenuineIntel" {
-            return Ok(());
-        }
+    if is_intel {
+        info!("CPU is Intel");
+    } else {
+        return Err(HypervisorError::CPUUnsupported);
     }
-    Err(HypervisorError::CPUUnsupported)
-}
 
-/// Checks for Virtual Machine Extension (VMX) support on the CPU.
-///
-/// # Returns
-///
-/// Returns `Ok(())` if VMX is supported, otherwise `Err(HypervisorError::VMXUnsupported)`.
-fn has_vmx_support() -> Result<(), HypervisorError> {
-    let cpuid = x86::cpuid::CpuId::new();
-    if let Some(fi) = cpuid.get_feature_info() {
-        if fi.has_vmx() {
-            return Ok(());
+    // Check if the CPU supports VMX
+    let cpuid_feature_info = cpuid_info.get_feature_info();
+
+    if let Some(ref feature_info) = cpuid_feature_info {
+        if feature_info.has_vmx() {
+            info!("Virtual Machine Extension (VMX) technology is supported");
+        } else {
+            return Err(HypervisorError::VMXUnsupported);
         }
+    } else {
+        return Err(HypervisorError::CPUUnsupported);
     }
-    Err(HypervisorError::VMXUnsupported)
-}
 
-/// Checks for Extended Page Tables (EPT) support on the CPU.
-///
-/// # Returns
-///
-/// Returns `Ok(())` if EPT is supported, otherwise `Err(HypervisorError::EPTUnsupported)`.
-///
-/// Credits Satoshi Tanda: https://github.com/tandasat/MiniVisorPkg/blob/master/Sources/MiniVisor.c#L534-L550
-fn check_ept_support() -> Result<(), HypervisorError> {
-    /// [Bit 6] Indicates support for a page-walk length of 4.
-    const PAGE_WALK_LENGTH_4: u64 = 1 << 6;
+    // Check if the CPU supports MTRRs (Memory Type Range Registers)
+    if let Some(ref feature_info) = cpuid_feature_info {
+        if feature_info.has_mtrr() {
+            info!("Memory Type Range Registers (MTRRs) are supported");
+        } else {
+            return Err(HypervisorError::MTRRUnsupported);
+        }
+    } else {
+        return Err(HypervisorError::CPUUnsupported);
+    }
 
-    /// [Bit 14] When set to 1, the logical processor allows software to configure the EPT paging-structure memory type to be * write-back (WB).
-    const MEMORY_TYPE_WRITE_BACK: u64 = 1 << 14;
-
-    /// [Bit 16] When set to 1, the logical processor allows software to configure a EPT PDE to map a 2-Mbyte page (by setting * bit 7 in the EPT PDE).
-    const PDE_2MB_PAGES: u64 = 1 << 16;
-
-    /// [Bit 20] If bit 20 is read as 1, the INVEPT instruction is supported.
-    const INVEPT: u64 = 1 << 20;
-
-    /// [Bit 25] When set to 1, the single-context INVEPT type is supported.
-    const INVEPT_SINGLE_CONTEXT: u64 = 1 << 25;
-
-    /// [Bit 26] When set to 1, the all-context INVEPT type is supported.
-    const INVEPT_ALL_CONTEXTS: u64 = 1 << 26;
-
-    /// [Bit 32] When set to 1, the INVVPID instruction is supported.
-    const INVVPID: u64 = 1 << 32;
-
-    /// [Bit 41] When set to 1, the single-context INVVPID type is supported.
-    const INVVPID_SINGLE_CONTEXT: u64 = 1 << 41;
-
-    /// [Bit 42] When set to 1, the all-context INVVPID type is supported.
-    const INVVPID_ALL_CONTEXTS: u64 = 1 << 42;
-
-    let ept_vpid_cap = rdmsr(IA32_VMX_EPT_VPID_CAP);
-
-    // Construct a combined mask for all required features for simplicity
-    let required_features = PAGE_WALK_LENGTH_4
-        | MEMORY_TYPE_WRITE_BACK
-        | PDE_2MB_PAGES
-        | INVEPT
-        | INVEPT_SINGLE_CONTEXT
-        | INVEPT_ALL_CONTEXTS
-        | INVVPID
-        | INVVPID_SINGLE_CONTEXT
-        | INVVPID_ALL_CONTEXTS;
-
-    if ept_vpid_cap & required_features != required_features {
+    // Check if the CPU supports EPT (Extended Page Tables)
+    let vmx_ept_vpid_cap = rdmsr(IA32_VMX_EPT_VPID_CAP);
+    let ept_supported = (vmx_ept_vpid_cap & (1 << 6)) != 0; // Bit 6: EPT support
+    if ept_supported {
+        info!("Extended Page Tables (EPT) are supported");
+    } else {
         return Err(HypervisorError::EPTUnsupported);
     }
 
     Ok(())
-}
-
-/// Checks for Memory Type Range Registers (MTRRs) support on the CPU.
-///
-/// # Returns
-///
-/// Returns `Ok(())` if MTRRs are supported, otherwise `Err(HypervisorError::MTRRUnsupported)`.
-fn has_mtrr() -> Result<(), HypervisorError> {
-    let cpuid = x86::cpuid::CpuId::new();
-    if let Some(fi) = cpuid.get_feature_info() {
-        if fi.has_mtrr() {
-            return Ok(());
-        }
-    }
-    Err(HypervisorError::MTRRUnsupported)
 }

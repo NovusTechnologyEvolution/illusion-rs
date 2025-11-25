@@ -16,22 +16,8 @@ unsafe extern "sysv64" {
 
 pub fn vmlaunch(registers: &mut GuestRegisters, launched: u64) -> u64 {
     unsafe {
-        log::debug!("vmlaunch: calling launch_vm with launched={}", launched);
-
-        // CRITICAL: Check and log RFLAGS before VMLAUNCH
-        let rflags: u64;
-        core::arch::asm!("pushfq; pop {}", out(reg) rflags);
-        log::debug!(
-            "RFLAGS before VMLAUNCH: {:#x} (IF={}, TF={})",
-            rflags,
-            (rflags & (1 << 9)) != 0, // Interrupt flag
-            (rflags & (1 << 8)) != 0  // Trap flag
-        );
-
         let registers_ptr = registers as *mut GuestRegisters;
-        let result = launch_vm(registers_ptr, launched);
-        log::debug!("vmlaunch: launch_vm returned {:#x}", result);
-        result
+        launch_vm(registers_ptr, launched)
     }
 }
 
@@ -146,22 +132,6 @@ launch_vm:
     ret
 
 vmexit_handler:
-    // EMERGENCY DEBUG: Write to serial port to prove we entered vmexit_handler
-    // This runs BEFORE anything else can fail
-    push    rax
-    push    rdx
-    mov     dx, 0x3F8       // COM1 data port
-    mov     al, 0x56        // 'V' - VM-exit handler reached!
-    out     dx, al
-    mov     al, 0x45        // 'E'
-    out     dx, al
-    mov     al, 0x58        // 'X'
-    out     dx, al
-    mov     al, 0x21        // '!'
-    out     dx, al
-    pop     rdx
-    pop     rax
-    
     // CRITICAL: At this point, RSP has been loaded from HOST_RSP in VMCS
     // HOST_RSP points to the stack AFTER the 8 register pushes in launch_vm
     

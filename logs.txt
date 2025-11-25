@@ -1,16 +1,12 @@
 vcpu-0 INFO: The Matrix is an illusion
 vcpu-0 DEBUG: Setting up the hypervisor
-vcpu-0 DEBUG: Loaded image base: 0x96f2000..0xd73b000
+vcpu-0 DEBUG: Loaded image base: 0x96f0000..0xd73b000
 vcpu-0 DEBUG: Starting hypervisor on all processors
 vcpu-0 INFO: start_hypervisor_on_all_processors: ENTRY
 vcpu-0 INFO: Total processors: 8, enabled: 8
 vcpu-0 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-0 DEBUG: capture_registers → already = false
-vcpu-0 DEBUG: virtualizing CPU …
-vcpu-0 DEBUG: Original captured RIP (return address): 0x96f414c
-vcpu-0 DEBUG: Guest will resume at RIP: 0x96f414c
-vcpu-0 DEBUG: Guest RSP: 0xffca538
-vcpu-0 DEBUG: virtualize_system(): landing=0x96f3eb0, host_stack_top=0xfbc5020
+vcpu-0 DEBUG: virtualizing CPU, RIP=0x96f2fe2, RSP=0xffca658->0xffca660
+vcpu-0 DEBUG: virtualize_system(): landing=0x96f1e60, host_stack_top=0xfbc4020
 vcpu-0 DEBUG: landing(): calling start_hypervisor
 vcpu-0 DEBUG: Starting hypervisor
 vcpu-0 INFO: CPU is Intel
@@ -38,8 +34,8 @@ vcpu-0 DEBUG:   Entry 4 (sel 0x0020): 0x008f9b000000ffff - 32-bit Code (access=0
 vcpu-0 DEBUG:   Entry 5 (sel 0x0028): 0x008f93000000ffff - Data (access=0x93, P=1, DPL=0, base=0x0, limit=0xfffff)
 vcpu-0 DEBUG: === END ORIGINAL UEFI GDT ===
 vcpu-0 DEBUG: Creating a new GDT with TSS for guest
-vcpu-0 DEBUG: TSS descriptor bytes BEFORE: [67, 00, 60, f0, bb, 89, 00, 0f]
-vcpu-0 DEBUG: TSS descriptor value BEFORE: 0x0f0089bbf0600067
+vcpu-0 DEBUG: TSS descriptor bytes BEFORE: [67, 00, 60, e0, bb, 89, 00, 0f]
+vcpu-0 DEBUG: TSS descriptor value BEFORE: 0x0f0089bbe0600067
 vcpu-0 DEBUG: Byte 6: 0x00 (limit_high=0x0, flags=0x0)
 vcpu-0 DEBUG: Flags breakdown:
 vcpu-0 DEBUG:   G (bit 3): 0
@@ -54,27 +50,27 @@ vcpu-0 DEBUG:   P (bit 7): 1
 vcpu-0 DEBUG: Current TSS type: 0x9, changing to 0xB (Busy TSS) for VMCS
 vcpu-0 DEBUG: Byte 5 (access byte) changed to: 0x8b
 vcpu-0 DEBUG:   Type (bits 0-3): 0xb (0xB = Busy TSS for VMX)
-vcpu-0 DEBUG: TSS descriptor bytes AFTER:  [67, 00, 60, f0, bb, 8b, 00, 0f]
-vcpu-0 DEBUG: TSS descriptor value AFTER:  0x0f008bbbf0600067
+vcpu-0 DEBUG: TSS descriptor bytes AFTER:  [67, 00, 60, e0, bb, 8b, 00, 0f]
+vcpu-0 DEBUG: TSS descriptor value AFTER:  0x0f008bbbe0600067
 vcpu-0 DEBUG: Fixed byte 6: 0x00 (limit_high=0x0, flags=0x0)
 vcpu-0 DEBUG: New GDT with TSS created for guest successfully!
 vcpu-0 DEBUG: Creating a new GDT with TSS for host
-vcpu-0 DEBUG: TSS base address: 0x000000000fbbf060
+vcpu-0 DEBUG: TSS base address: 0x000000000fbbe060
 vcpu-0 DEBUG: TSS limit: 0x0000000000000067
-vcpu-0 DEBUG: TSS descriptor low: 0x0f0089bbf0600067
+vcpu-0 DEBUG: TSS descriptor low: 0x0f0089bbe0600067
 vcpu-0 DEBUG: New GDT with TSS and IDT created for host successfully!
 vcpu-0 DEBUG: Setting up Guest Registers State
 vcpu-0 DEBUG: VMX CR0 fixed0: 0x0000000080000021, fixed1: 0x00000000ffffffff
 vcpu-0 DEBUG: Verifying guest_cr3 0xfc01000
 vcpu-0 DEBUG: PML4[0] at guest_cr3 = 0xfc02023
 vcpu-0 DEBUG: ✓ Guest CR3 points to valid page tables (PML4[0] = 0xfc02023)
-vcpu-0 DEBUG: Verifying Guest RIP: 0x96f414c
-vcpu-0 DEBUG: First 16 bytes at Guest RIP: [88, 44, 24, 2f, 48, 8b, 0d, c9, 3e, 04, 04, 48, 83, f9, 03, 0f]
+vcpu-0 DEBUG: Verifying Guest RIP: 0x96f2fe2
+vcpu-0 DEBUG: First 16 bytes at Guest RIP: [84, c0, 0f, 84, e6, 01, 00, 00, 48, 8b, 05, 27, 50, 04, 04, 48]
 vcpu-0 DEBUG: Guest will resume at original UEFI return address
 vcpu-0 DEBUG: VMX CR4 fixed0: 0x0000000000002000, fixed1: 0x0000000001f72fff
 vcpu-0 DEBUG: Guest CR4 (with VMXE per VMX requirements): 0x0000000000002668
 vcpu-0 DEBUG: Guest CR0 (64-bit mode): 0x0000000080010033, Guest CR3: 0x000000000fc01000, Guest CR4: 0x0000000000002668
-vcpu-0 DEBUG: Guest RSP: 0x000000000ffca538, Guest RIP: 0x00000000096f414c
+vcpu-0 DEBUG: Guest RSP: 0x000000000ffca660, Guest RIP: 0x00000000096f2fe2
 vcpu-0 DEBUG: Guest EFER (64-bit mode): 0x0000000000000500
 vcpu-0 DEBUG: === Setting up segment access rights for 64-bit mode ===
 vcpu-0 DEBUG: Using TR AR from access_rights_from_native: 0x008b
@@ -89,17 +85,17 @@ vcpu-0 DEBUG: GS AR: 0xc093 (expected 0xc093)
 vcpu-0 DEBUG: LDTR AR: 0x10000 (expected 0x10000)
 vcpu-0 DEBUG: TR AR: 0x008b (expected 0x008b)
 vcpu-0 DEBUG: === GUEST GDTR AND TR CONFIGURATION ===
-vcpu-0 DEBUG: Guest GDTR base: 0x00000000097338a0
+vcpu-0 DEBUG: Guest GDTR base: 0x000000000972e8c8
 vcpu-0 DEBUG: Guest GDTR limit: 0x003f (64 bytes, 8 descriptors max)
 vcpu-0 DEBUG: Guest TR selector: 0x0030 (index 6)
-vcpu-0 DEBUG: Guest TR base: 0x000000000fbbf060
+vcpu-0 DEBUG: Guest TR base: 0x000000000fbbe060
 vcpu-0 DEBUG: Guest TR offset in GDT: 0x0030
 vcpu-0 DEBUG: Guest TR descriptor end offset: 0x003f (TSS is 16 bytes)
 vcpu-0 DEBUG: Check: TR end (0x3f) <= GDTR limit (0x3f)? true
-vcpu-0 DEBUG: TSS descriptor in guest GDT: 0x0f008bbbf0600067 0x0000000000000000
+vcpu-0 DEBUG: TSS descriptor in guest GDT: 0x0f008bbbe0600067 0x0000000000000000
 vcpu-0 DEBUG:   Type: 0xb (should be 0xB for Busy TSS)
 vcpu-0 DEBUG:   Present: true
-vcpu-0 DEBUG:   Base: 0x000000000fbbf060 (should match TR base 0x000000000fbbf060)
+vcpu-0 DEBUG:   Base: 0x000000000fbbe060 (should match TR base 0x000000000fbbe060)
 vcpu-0 DEBUG: === SETTING PENDING_DBG_EXCEPTIONS ===
 vcpu-0 DEBUG: After write, PENDING_DBG_EXCEPTIONS = 0x0
 vcpu-0 DEBUG: === FINAL VMCS FIELD VERIFICATION ===
@@ -117,7 +113,7 @@ vcpu-0 DEBUG: Final Pending Debug: 0x0
 vcpu-0 DEBUG: Final Guest CR4: 0x2668 (VMXE should be set)
 vcpu-0 DEBUG: Guest Registers State setup successfully!
 vcpu-0 DEBUG: Setting up Host Registers State
-vcpu-0 DEBUG: Host CR3: using actual CR3 0xfc01000 instead of pml4_pa 0x9734000
+vcpu-0 DEBUG: Host CR3: using actual CR3 0xfc01000 instead of pml4_pa 0x972f000
 vcpu-0 DEBUG: ✓ Host CR3 verified: PML4[0] = 0xfc02023
 vcpu-0 DEBUG: Host Registers State setup successfully!
 vcpu-0 DEBUG: Setting up VMCS Control Fields
@@ -135,65 +131,44 @@ vcpu-0 DEBUG: CR4 guest/host mask: 0xfffffffffe08f000
 vcpu-0 DEBUG: VMCS Control Fields setup successfully!
 vcpu-0 DEBUG: VMCS activated
 vcpu-0 INFO: Launching the VM until a vmexit occurs...
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=0
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x206 (IF=true, TF=false)
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0x9701f18
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0xfabc13e
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0xfabc13e
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-vcpu-0 DEBUG: capture_registers → already = true
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0x9701f18
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-vcpu-0 DEBUG: CPU already virtualized (returned from VM-exit)
- VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0xfb4c3f0
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0xfb4c3f0
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0xfb4c3f0
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0xfb4c3f0
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0xfb4c3f0
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-VEX!vcpu-0 DEBUG: vmlaunch: launch_vm returned 0x0
-vcpu-0 DEBUG: VM-exit reason: 0xa, RIP: 0xfb51139
-vcpu-0 DEBUG: vmlaunch: calling launch_vm with launched=1
-vcpu-0 DEBUG: RFLAGS before VMLAUNCH: 0x6 (IF=false, TF=false)
-!!!! X64 Exception Type - 06(#UD - Invalid Opcode)  CPU Apic ID - 00000000 !!!!
-RIP  - 000000000FFCA8B0, CS  - 0000000000000018, RFLAGS - 0000000000010206
-RAX  - 00000000000FFC50, RCX - 0000000000000000, RDX - 00000000000003F8
-RBX  - 000000000FA7DB18, RSP - 000000000FFCA7D8, RBP - 000000000FFCA970
-RSI  - 0000000000000004, RDI - 8000000000000015
-R8   - 000000000972B1D2, R9  - 000000000972B1D2, R10 - 00000000000003FD
-R11  - 000000000000000A, R12 - 000000000FFCA898, R13 - 0000000000000008
-R14  - 000000000F1E1718, R15 - 000000000FB522A0
-DS   - 0000000000000008, ES  - 0000000000000008, FS  - 0000000000000008
-GS   - 0000000000000008, SS  - 0000000000000008
-CR0  - 0000000080010033, CR2 - 0000000000000000, CR3 - 000000000FC01000
-CR4  - 0000000000000668, CR8 - 0000000000000000
-DR0  - 0000000000000000, DR1 - 0000000000000000, DR2 - 0000000000000000
-DR3  - 0000000000000000, DR6 - 00000000FFFF0FF0, DR7 - 0000000000000400
-GDTR - 00000000097338A0 000000000000003F, LDTR - 0000000000000000
-IDTR - 000000000FB53460 0000000000000FFF,   TR - 0000000000000030
-FXSAVE_STATE - 000000000FFCA430
-!!!! Can't find image information. !!!!
+vcpu-0 INFO: Hypervisor installed on BSP (AP support pending per-CPU structures)
+vcpu-0 INFO: VM-exit milestone: 10 exits
+vcpu-0 INFO: VM-exit milestone: 100 exits
+vcpu-0 INFO: VM-exit milestone: 1,000 exits
+vcpu-0 INFO: VM-exit milestone: 10,000 exits
+vcpu-0 INFO: VM-exit milestone: 100000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 200000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 300000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 400000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 500000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 600000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 700000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 800000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 900000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 1000000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 1100000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: VM-exit milestone: 1200000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 DEBUG: Handling XSETBV VM VM exit...
+vcpu-0 DEBUG: XSETBV VM exit handled successfully!
+vcpu-0 DEBUG: Handling XSETBV VM VM exit...
+vcpu-0 DEBUG: XSETBV VM exit handled successfully!
+vcpu-0 DEBUG: Handling XSETBV VM VM exit...
+vcpu-0 DEBUG: XSETBV VM exit handled successfully!
+vcpu-0 ERROR: === TRIPLE FAULT ===
+vcpu-0 ERROR: Exit count: 1220130
+vcpu-0 ERROR: Guest RIP: 0xc53894
+vcpu-0 ERROR: Guest RSP: 0x1a7da0
+vcpu-0 ERROR: Guest CR0: 0x80010033
+vcpu-0 ERROR: Guest CR3: 0x1ae000
+vcpu-0 ERROR: Guest CR4: 0x42668
+vcpu-0 ERROR: Guest RFLAGS: 0x10046
+vcpu-0 ERROR: Guest CS: 0x10
+vcpu-0 ERROR: Guest SS: 0x0
+vcpu-0 ERROR: Guest TR: 0x30
+vcpu-0 ERROR: Guest TR base: 0xfbbe060
+vcpu-0 ERROR: Guest GDTR base: 0x1ac000
+vcpu-0 ERROR: Guest GDTR limit: 0x7f
+vcpu-0 ERROR: Guest IDTR base: 0x1ac080
+vcpu-0 ERROR: Guest IDTR limit: 0xfff
+vcpu-0 ERROR: Interruptibility: 0x0
+vcpu-0 ERROR: Activity state: 0x0

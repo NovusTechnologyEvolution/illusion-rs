@@ -297,9 +297,6 @@ impl Vm {
         // Decode and return the basic exit reason
         let exit_reason = vmread(vmcs::ro::EXIT_REASON) as u32;
 
-        // DEBUG: Log every exit reason to diagnose hangs
-        log::debug!("VM-exit reason: {:#x}, RIP: {:#x}", exit_reason, self.guest_registers.rip);
-
         let Some(basic_exit_reason) = VmxBasicExitReason::from_u32(exit_reason) else {
             error!("Unknown exit reason: 0x{:x}", exit_reason);
             return Err(HypervisorError::UnknownVMExitReason);
