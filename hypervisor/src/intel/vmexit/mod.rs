@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod cpuid;
 pub mod cr;
+pub mod diagnostics;
 pub mod ept_misconfiguration;
 pub mod ept_violation;
 pub mod exception;

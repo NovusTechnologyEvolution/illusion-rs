@@ -1,9 +1,10 @@
 #![allow(static_mut_refs)]
 #![allow(unsafe_op_in_unsafe_fn)]
 //! This module provides a global allocator using a linked list heap allocation strategy.
-//! The allocator is initialized with a fixed-size memory pool and supports memory allocation,
-//! deallocation, and reallocation operations. The allocator tracks memory usage and provides
-//! debugging information.
+//!
+//! IMPORTANT: Call `init_allocator_with_memory()` with RUNTIME_SERVICES_DATA memory
+//! to ensure the heap survives Windows boot. Otherwise, use `heap_init()` for
+//! the fallback static heap (which may be reclaimed by Windows).
 
 use {
     crate::global_const::TOTAL_HEAP_SIZE,
@@ -19,7 +20,8 @@ use {
 /// The global heap size used by the allocator.
 const HEAP_SIZE: usize = TOTAL_HEAP_SIZE;
 
-/// A statically allocated heap for the entire system.
+/// A statically allocated heap for the entire system (FALLBACK ONLY).
+/// WARNING: This may be in LOADER_DATA memory which Windows reclaims!
 static mut HEAP: [u8; HEAP_SIZE] = [0u8; HEAP_SIZE];
 
 /// A global mutex-protected allocator instance.
@@ -28,19 +30,66 @@ static ALLOCATOR_MUTEX: Mutex<()> = Mutex::new(());
 /// A global linked list heap allocator instance.
 static mut LIST_HEAP: Option<ListHeap<HEAP_SIZE>> = None;
 
+/// Tracks whether we're using protected memory
+static mut USING_PROTECTED_MEMORY: bool = false;
+
 /// A global allocator that uses the custom linked list heap.
 pub struct GlobalAllocator;
 
-/// Old name used by the UEFI crate.
+/// Old name used by the UEFI crate - uses static heap (may be reclaimed!)
 pub fn heap_init() {
     init_allocator();
 }
 
-/// Initializes the global allocator.
+/// Initialize with the static heap.
+/// WARNING: This memory may be reclaimed by Windows after ExitBootServices!
 pub fn init_allocator() {
     unsafe {
+        USING_PROTECTED_MEMORY = false;
         LIST_HEAP = Some(ListHeap::new(&mut HEAP));
+        debug!("Heap initialized with STATIC memory at {:#x} (WARNING: may be reclaimed by Windows!)", HEAP.as_ptr() as u64);
     }
+}
+
+/// Initialize with externally-provided memory.
+/// Call this with RUNTIME_SERVICES_DATA memory to survive Windows boot!
+///
+/// # Safety
+/// - `heap_ptr` must point to valid memory of at least `size` bytes
+/// - The memory must remain valid for the lifetime of the hypervisor
+/// - The memory should be allocated as RUNTIME_SERVICES_DATA
+pub unsafe fn init_allocator_with_memory(heap_ptr: *mut u8, size: usize) {
+    if heap_ptr.is_null() || size < 0x10000 {
+        debug!("Invalid heap parameters, falling back to static heap");
+        init_allocator();
+        return;
+    }
+
+    USING_PROTECTED_MEMORY = true;
+
+    // Zero the memory first
+    core::ptr::write_bytes(heap_ptr, 0, size);
+
+    // Initialize the free list head at the start of the memory
+    let free_list_head = heap_ptr as *mut Link;
+    (*free_list_head).next = ptr::null_mut();
+    (*free_list_head).size = size as isize - Link::SIZE as isize;
+
+    // Create a temporary heap structure
+    // We need to store this in LIST_HEAP but it expects ListHeap<HEAP_SIZE>
+    // Since we're replacing the whole thing, we'll use a workaround
+    LIST_HEAP = Some(ListHeap {
+        memory: heap_ptr,
+        size,
+        free_list_head,
+    });
+
+    debug!("Heap initialized with PROTECTED memory at {:#x} ({} bytes, {} pages)", heap_ptr as u64, size, (size + 0xFFF) / 0x1000);
+}
+
+/// Check if we're using protected memory
+pub fn is_using_protected_memory() -> bool {
+    unsafe { USING_PROTECTED_MEMORY }
 }
 
 /// A linked list heap allocator.
@@ -105,7 +154,7 @@ impl<const SIZE: usize> ListHeap<SIZE> {
             total_allocations -= 1;
 
             let wasted = (total_allocations + 2) * Link::SIZE;
-            debug!("Total Heap Size:                     0x{:X}", SIZE);
+            debug!("Total Heap Size:                     0x{:X}", self.size);
             debug!("Space wasted on memory management:   0x{wasted:X} bytes");
             debug!("Total memory allocated:              0x{total_allocation_size:X} bytes");
             debug!("Total memory available:              0x{total_freespace:X} bytes");

@@ -160,13 +160,27 @@ impl Vmcs {
         // IA32_EFER: must be consistent with IA32E_MODE_GUEST entry controls
         // ---------------------------------------------------------------------
         //
-        // CRITICAL FIX: Enable long mode in guest EFER
+        // CRITICAL FIX: Enable long mode AND NXE in guest EFER
+        // The Windows bootloader creates page tables with NX bits (bit 63) set.
+        // If EFER.NXE is not set, bit 63 becomes a reserved bit and causes #PF.
         let mut guest_efer = rdmsr(msr::IA32_EFER);
         guest_efer |= 1 << 8; // LME (Long Mode Enable) = 1
         guest_efer |= 1 << 10; // LMA (Long Mode Active) = 1
+        guest_efer |= 1 << 11; // NXE (No-Execute Enable) = 1 - CRITICAL for Windows boot!
         vmwrite(vmcs::guest::IA32_EFER_FULL, guest_efer);
 
-        log::debug!("Guest EFER (64-bit mode): {:#018x}", guest_efer);
+        // CRITICAL: Since LOAD_IA32_EFER is not supported by VMware, the VMCS guest EFER
+        // field is informational only. We must write directly to the actual MSR as well!
+        // Without this, the real EFER will not have NXE set and page faults will occur.
+        unsafe {
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") msr::IA32_EFER,
+                in("eax") (guest_efer & 0xFFFFFFFF) as u32,
+                in("edx") (guest_efer >> 32) as u32,
+            );
+        }
+        log::debug!("Guest EFER (64-bit mode): {:#018x} - written to both VMCS and actual MSR", guest_efer);
 
         // ---------------------------------------------------------------------
         // Segment selectors - use selectors that match the UEFI GDT layout
@@ -466,9 +480,11 @@ impl Vmcs {
     pub fn setup_vmcs_control_fields(primary_eptp: u64, msr_bitmap: u64, io_bitmap_a: u64, io_bitmap_b: u64) -> Result<(), HypervisorError> {
         log::debug!("Setting up VMCS Control Fields");
 
-        const PRIMARY_CTL: u64 = (vmcs::control::PrimaryControls::SECONDARY_CONTROLS.bits()
-            | vmcs::control::PrimaryControls::USE_MSR_BITMAPS.bits()
-            | vmcs::control::PrimaryControls::HLT_EXITING.bits()) as u64;
+        // NOTE: HLT_EXITING removed - let the guest actually halt and wake on interrupts.
+        // With HLT_EXITING enabled, we were advancing RIP past HLT but not putting the
+        // guest in a halted state, causing Windows boot timing issues.
+        const PRIMARY_CTL: u64 =
+            (vmcs::control::PrimaryControls::SECONDARY_CONTROLS.bits() | vmcs::control::PrimaryControls::USE_MSR_BITMAPS.bits()) as u64;
 
         const SECONDARY_CTL: u64 = (vmcs::control::SecondaryControls::ENABLE_RDTSCP.bits()
             | vmcs::control::SecondaryControls::ENABLE_XSAVES_XRSTORS.bits()
@@ -476,15 +492,20 @@ impl Vmcs {
             | vmcs::control::SecondaryControls::ENABLE_VPID.bits()
             | vmcs::control::SecondaryControls::ENABLE_EPT.bits()
             | vmcs::control::SecondaryControls::CONCEAL_VMX_FROM_PT.bits()
-            | vmcs::control::SecondaryControls::UNRESTRICTED_GUEST.bits()) as u64;
+            | vmcs::control::SecondaryControls::UNRESTRICTED_GUEST.bits()
+            | vmcs::control::SecondaryControls::WBINVD_EXITING.bits()) as u64;
 
+        // VM-Entry controls
+        // CRITICAL: Must include LOAD_IA32_EFER to ensure guest EFER (with NXE) is loaded on VM-entry
         const ENTRY_CTL: u64 = (vmcs::control::EntryControls::LOAD_DEBUG_CONTROLS.bits()
             | vmcs::control::EntryControls::IA32E_MODE_GUEST.bits()
+            | vmcs::control::EntryControls::LOAD_IA32_EFER.bits()
             | vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
 
         log::debug!("Requested ENTRY_CTL bits: {:#010x}", ENTRY_CTL);
         log::debug!("  LOAD_DEBUG_CONTROLS: {:#x}", vmcs::control::EntryControls::LOAD_DEBUG_CONTROLS.bits());
         log::debug!("  IA32E_MODE_GUEST: {:#x}", vmcs::control::EntryControls::IA32E_MODE_GUEST.bits());
+        log::debug!("  LOAD_IA32_EFER: {:#x}", vmcs::control::EntryControls::LOAD_IA32_EFER.bits());
         log::debug!("  CONCEAL_VMX_FROM_PT: {:#x}", vmcs::control::EntryControls::CONCEAL_VMX_FROM_PT.bits());
 
         const EXIT_CTL: u64 = (vmcs::control::ExitControls::HOST_ADDRESS_SPACE_SIZE.bits()
@@ -493,13 +514,34 @@ impl Vmcs {
             | vmcs::control::ExitControls::LOAD_IA32_PAT.bits()
             | vmcs::control::ExitControls::CONCEAL_VMX_FROM_PT.bits()) as u64;
 
-        // Don't intercept external interrupts - let guest handle them naturally
-        // (We enabled this for debugging but it causes an interrupt storm since we don't re-inject)
+        // Don't intercept external interrupts or NMIs - let guest handle them naturally
+        // NMI testing showed no NMIs before crash, so NMIs aren't the cause.
         const PINBASED_CTL: u64 = 0;
 
         vmwrite(vmcs::control::PRIMARY_PROCBASED_EXEC_CONTROLS, adjust_vmx_controls(VmxControl::ProcessorBased, PRIMARY_CTL));
         vmwrite(vmcs::control::SECONDARY_PROCBASED_EXEC_CONTROLS, adjust_vmx_controls(VmxControl::ProcessorBased2, SECONDARY_CTL));
-        vmwrite(vmcs::control::VMENTRY_CONTROLS, adjust_vmx_controls(VmxControl::VmEntry, ENTRY_CTL));
+
+        let adjusted_entry_ctl = adjust_vmx_controls(VmxControl::VmEntry, ENTRY_CTL);
+        log::debug!("Requested ENTRY_CTL: {:#x}, Adjusted: {:#x}", ENTRY_CTL, adjusted_entry_ctl);
+        if (ENTRY_CTL & 0x8000) != 0 && (adjusted_entry_ctl & 0x8000) == 0 {
+            log::error!("!!! LOAD_IA32_EFER (bit 15) was CLEARED by adjust_vmx_controls !!!");
+            log::error!("    This means VMware doesn't allow this control bit");
+            // Read the capability MSR to see what's allowed
+            let vmx_basic = unsafe { x86::msr::rdmsr(x86::msr::IA32_VMX_BASIC) };
+            let true_cap_msr_supported = (vmx_basic & (1u64 << 55)) != 0;
+            let cap_msr = if true_cap_msr_supported {
+                x86::msr::IA32_VMX_TRUE_ENTRY_CTLS
+            } else {
+                x86::msr::IA32_VMX_ENTRY_CTLS
+            };
+            let capabilities = unsafe { x86::msr::rdmsr(cap_msr) };
+            let allowed0 = capabilities as u32;
+            let allowed1 = (capabilities >> 32) as u32;
+            log::error!("    Entry capability MSR: allowed0={:#x}, allowed1={:#x}", allowed0, allowed1);
+            log::error!("    LOAD_IA32_EFER allowed: {}", (allowed1 & 0x8000) != 0);
+        }
+        vmwrite(vmcs::control::VMENTRY_CONTROLS, adjusted_entry_ctl);
+
         vmwrite(vmcs::control::VMEXIT_CONTROLS, adjust_vmx_controls(VmxControl::VmExit, EXIT_CTL));
         vmwrite(vmcs::control::PINBASED_EXEC_CONTROLS, adjust_vmx_controls(VmxControl::PinBased, PINBASED_CTL));
 
@@ -513,19 +555,37 @@ impl Vmcs {
         log::debug!("Unrestricted Guest: {}", (secondary_controls & vmcs::control::SecondaryControls::UNRESTRICTED_GUEST.bits() as u64) != 0);
         log::debug!("IA32E_MODE_GUEST: {}", (vmentry_controls & vmcs::control::EntryControls::IA32E_MODE_GUEST.bits() as u64) != 0);
 
+        // NOTE: vmx_cr0_fixed and vmx_cr4_fixed MSRs are read for logging only
+        // With simplified masks (CR0=0, CR4=VMXE only), we don't use them in the masks
+        // Hardware automatically enforces VMX requirements on actual CR values
         let vmx_cr0_fixed0 = unsafe { msr::rdmsr(msr::IA32_VMX_CR0_FIXED0) };
         let vmx_cr0_fixed1 = unsafe { msr::rdmsr(msr::IA32_VMX_CR0_FIXED1) };
-
         let vmx_cr4_fixed0 = unsafe { msr::rdmsr(msr::IA32_VMX_CR4_FIXED0) };
         let vmx_cr4_fixed1 = unsafe { msr::rdmsr(msr::IA32_VMX_CR4_FIXED1) };
+        log::debug!("VMX CR0 fixed0: {:#x}, fixed1: {:#x}", vmx_cr0_fixed0, vmx_cr0_fixed1);
+        log::debug!("VMX CR4 fixed0: {:#x}, fixed1: {:#x}", vmx_cr4_fixed0, vmx_cr4_fixed1);
 
-        vmwrite(
-            vmcs::control::CR0_GUEST_HOST_MASK,
-            vmx_cr0_fixed0 | !vmx_cr0_fixed1 | Cr0Flags::CACHE_DISABLE.bits() | Cr0Flags::WRITE_PROTECT.bits(),
-        );
+        // CR0 MASK: Intercept modifications to VMX-critical and commonly-modified bits
+        // In nested virtualization (VMware), letting CR0 writes go directly to hardware
+        // can cause #GP because VMware's nested VMX has its own constraints.
+        // By intercepting, our CR handler can properly satisfy VMX requirements while
+        // showing the guest what it expects via the read shadow.
+        //
+        // Bits to intercept:
+        // - PE (bit 0): Protected mode - VMX requires this set
+        // - NE (bit 5): Numeric error - VMX requires this set
+        // - WP (bit 16): Write protect - Windows toggles this frequently!
+        // - PG (bit 31): Paging - VMX requires this set
+        // Using fixed0 | 0x10000 (WP) to intercept VMX-required bits plus WP
+        let cr0_mask = vmx_cr0_fixed0 | 0x10000u64; // fixed0 bits + WP
+        vmwrite(vmcs::control::CR0_GUEST_HOST_MASK, cr0_mask);
+        log::debug!("CR0 guest/host mask: {:#x} (intercepting VMX-required bits + WP)", cr0_mask);
 
-        // CRITICAL: Include VMXE in the CR4 mask so we intercept access to it
-        vmwrite(vmcs::control::CR4_GUEST_HOST_MASK, vmx_cr4_fixed0 | !vmx_cr4_fixed1 | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits());
+        // SIMPLIFIED CR4 MASK: Only intercept VMXE (bit 13) to hide hypervisor
+        // The old mask (vmx_cr4_fixed0 | !vmx_cr4_fixed1 | VMXE) was too aggressive
+        // !vmx_cr4_fixed1 inverts all bits, intercepting nearly everything
+        vmwrite(vmcs::control::CR4_GUEST_HOST_MASK, Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits());
+        log::debug!("CR4 guest/host mask: {:#x} (only VMXE)", Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits());
 
         vmwrite(vmcs::control::CR0_READ_SHADOW, Cr0::read_raw());
 
@@ -542,10 +602,13 @@ impl Vmcs {
         vmwrite(0x2000, io_bitmap_a); // IO_BITMAP_A
         vmwrite(0x2002, io_bitmap_b); // IO_BITMAP_B
 
-        // Don't intercept exceptions - let the guest handle them
-        // The triple fault we saw (SS=0, CR3 changed) is during Windows boot
-        // when the bootloader switches to its own GDT/IDT. This is normal.
-        vmwrite(vmcs::control::EXCEPTION_BITMAP, 0u32);
+        // Exception bitmap: Controls which exceptions cause VM-exit
+        //
+        // Only intercept #DF (Double Fault) to catch exception cascades before triple fault
+        // The triple fault happens without any visible VM-exit, so #DF should catch it
+        const EXCEPTION_BITMAP: u32 = 1 << 8; // #DF only
+        vmwrite(vmcs::control::EXCEPTION_BITMAP, EXCEPTION_BITMAP);
+        log::debug!("Exception bitmap: {:#x} (intercepting #DF)", EXCEPTION_BITMAP);
 
         vmwrite(0x4016, 0u32); // VM_ENTRY_INTR_INFO
         vmwrite(0x4018, 0u32); // VM_ENTRY_EXCEPTION_ERROR_CODE

@@ -14,7 +14,7 @@ use {
             bitmap::{MsrAccessType, MsrOperation},
             events::EventInjection,
             hooks::hook_manager::SHARED_HOOK_MANAGER,
-            support::{rdmsr, wrmsr},
+            support::{rdmsr, vmwrite, wrmsr},
             vm::Vm,
             vmexit::ExitType,
         },
@@ -22,7 +22,7 @@ use {
     bit_field::BitField,
     core::ops::RangeInclusive,
     log::*,
-    x86::msr,
+    x86::{msr, vmx::vmcs},
 };
 
 /// Handles MSR access based on the provided access type.
@@ -107,6 +107,11 @@ pub fn handle_msr_access(vm: &mut Vm, access_type: MsrAccessType) -> Result<Exit
                     result_value.set_bit(VMXON_OUTSIDE_SMX as usize, false);
                     result_value
                 }
+
+                // NOTE: EFER reads are NOT intercepted - the bootloader reads EFER
+                // thousands of times and intercepting would cause massive overhead.
+                // We only intercept EFER writes to keep the VMCS in sync.
+                // Reading the actual MSR is fine since we keep it synchronized.
                 _ => rdmsr(msr_id),
             };
 
@@ -172,6 +177,27 @@ pub fn handle_msr_access(vm: &mut Vm, access_type: MsrAccessType) -> Result<Exit
                 // vm.msr_bitmap.modify_msr_interception(msr::IA32_GS_BASE, MsrAccessType::Write, MsrOperation::Unhook);
                 // trace!("KiSystemStartup being executed...");
                 wrmsr(msr_id, msr_value);
+            } else if msr_id == msr::IA32_EFER {
+                // CRITICAL: Handle EFER writes properly since VMware doesn't support LOAD_IA32_EFER.
+                // We need to:
+                // 1. Update the VMCS guest EFER field (so reads return the expected value)
+                // 2. Actually write the MSR (so the hardware state is correct)
+                // 3. Preserve critical bits like LME, LMA, NXE
+
+                // The guest is trying to write a new EFER value.
+                // We must ensure LME and LMA remain set (we're in long mode).
+                // Allow NXE to be modified by the guest.
+                let mut new_efer = msr_value;
+                new_efer |= 1 << 8; // LME must stay 1
+                new_efer |= 1 << 10; // LMA must stay 1 (we're in long mode)
+
+                // Update the VMCS guest EFER field
+                vmwrite(vmcs::guest::IA32_EFER_FULL, new_efer);
+
+                // Actually write to the MSR so hardware state is correct
+                wrmsr(msr_id, new_efer);
+
+                trace!("IA32_EFER write: guest requested {:#x}, wrote {:#x} (preserved LME/LMA)", msr_value, new_efer);
             } else {
                 // For MSRs other than msr::IA32_LSTAR or non-original LSTAR value writes, proceed with the write operation.
                 // If the guest writes any other value (which would typically only happen if the guest is attempting to modify the syscall mechanism itself),

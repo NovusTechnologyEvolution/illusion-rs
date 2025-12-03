@@ -21,8 +21,7 @@ use {
 ///
 /// # Arguments
 ///
-/// * `guest_registers` - A mutable reference to the guest's register state.
-/// * `vmx` - A mutable reference to the Vmx structure representing the current VM.
+/// * `vm` - A mutable reference to the VM structure representing the current VM.
 ///
 /// # Returns
 ///
@@ -40,6 +39,15 @@ pub fn handle_exception(vm: &mut Vm) -> ExitType {
                     let exit_qualification_value = vmread(vmcs::ro::EXIT_QUALIFICATION);
                     let ept_violation_qualification = EptViolationExitQualification::from_exit_qualification(exit_qualification_value);
                     log::trace!("Exit Qualification for EPT Violations: {:#?}", ept_violation_qualification);
+
+                    // Log page fault details for debugging
+                    log::debug!(
+                        "#PF at RIP={:#x}, CR2 (faulting addr)={:#x}, error_code={:#x}",
+                        vm.guest_registers.rip,
+                        exit_qualification_value,
+                        interruption_error_code_value
+                    );
+
                     EventInjection::vmentry_inject_pf(interruption_error_code_value as u32);
                 }
                 ExceptionInterrupt::GeneralProtectionFault => {
@@ -52,164 +60,101 @@ pub fn handle_exception(vm: &mut Vm) -> ExitType {
                         vmread(vmcs::guest::CR3)
                     );
 
+                    // Log CR0/CR4 state which often causes #GP
+                    let cr0 = vmread(vmcs::guest::CR0);
+                    let cr4 = vmread(vmcs::guest::CR4);
+                    let cr0_shadow = vmread(vmcs::control::CR0_READ_SHADOW);
+                    let cr4_shadow = vmread(vmcs::control::CR4_READ_SHADOW);
+                    log::error!("CR0={:#x} (shadow={:#x}) CR4={:#x} (shadow={:#x})", cr0, cr0_shadow, cr4, cr4_shadow);
+
                     // Re-inject to guest - it may have its own handler
                     EventInjection::vmentry_inject_gp(interruption_error_code_value as u32);
                 }
                 ExceptionInterrupt::Breakpoint => {
+                    log::debug!("#BP at RIP={:#x}", vm.guest_registers.rip);
                     EventInjection::vmentry_inject_bp();
                 }
                 ExceptionInterrupt::InvalidOpcode => {
                     log::error!("=== #UD (Invalid Opcode) EXCEPTION DETECTED ===");
+                    dump_ud_diagnostics(vm);
 
-                    // Check what caused the VM-exit
-                    let exit_intr_info = vmread(vmcs::ro::VMEXIT_INTERRUPTION_INFO);
-                    let exit_intr_err = vmread(vmcs::ro::VMEXIT_INTERRUPTION_ERR_CODE);
-                    let exit_qual = vmread(vmcs::ro::EXIT_QUALIFICATION);
-                    let instr_len = vmread(vmcs::ro::VMEXIT_INSTRUCTION_LEN);
-                    log::error!("VM-exit interruption info: {:#x}", exit_intr_info);
-                    log::error!("VM-exit interruption err:  {:#x}", exit_intr_err);
-                    log::error!("Exit qualification:        {:#x}", exit_qual);
-                    log::error!("Instruction length:        {:#x}", instr_len);
+                    // Re-inject to guest instead of panicking
+                    EventInjection::vmentry_inject_ud();
+                    log::warn!("Re-injecting #UD to guest at RIP={:#x}", vm.guest_registers.rip);
+                }
+                ExceptionInterrupt::DoubleFault => {
+                    log::error!("=== DOUBLE FAULT DETECTED ===");
+                    log::error!("RIP={:#x} RSP={:#x}", vm.guest_registers.rip, vm.guest_registers.rsp);
+                    log::error!("This is usually fatal - check for stack overflow or IDT issues");
 
-                    // Check IDT vectoring info (tells us if an event was in progress)
-                    let idt_vec_info = vmread(vmcs::ro::IDT_VECTORING_INFO);
-                    let idt_vec_err = vmread(vmcs::ro::IDT_VECTORING_ERR_CODE);
-                    log::error!("IDT vectoring info:        {:#x}", idt_vec_info);
-                    log::error!("IDT vectoring err code:    {:#x}", idt_vec_err);
-
-                    log::error!("RIP: {:#x}, RSP: {:#x}", vm.guest_registers.rip, vm.guest_registers.rsp);
-                    log::error!("RFLAGS: {:#x}", vm.guest_registers.rflags);
-                    log::error!(
-                        "RAX={:#x} RBX={:#x} RCX={:#x} RDX={:#x}",
-                        vm.guest_registers.rax,
-                        vm.guest_registers.rbx,
-                        vm.guest_registers.rcx,
-                        vm.guest_registers.rdx
-                    );
-                    log::error!("RSI={:#x} RDI={:#x} RBP={:#x}", vm.guest_registers.rsi, vm.guest_registers.rdi, vm.guest_registers.rbp);
-                    log::error!(
-                        "R8={:#x} R9={:#x} R10={:#x} R11={:#x}",
-                        vm.guest_registers.r8,
-                        vm.guest_registers.r9,
-                        vm.guest_registers.r10,
-                        vm.guest_registers.r11
-                    );
-                    log::error!(
-                        "R12={:#x} R13={:#x} R14={:#x} R15={:#x}",
-                        vm.guest_registers.r12,
-                        vm.guest_registers.r13,
-                        vm.guest_registers.r14,
-                        vm.guest_registers.r15
-                    );
-                    log::error!(
-                        "CS={:#x} SS={:#x} DS={:#x} ES={:#x}",
-                        vmread(vmcs::guest::CS_SELECTOR),
-                        vmread(vmcs::guest::SS_SELECTOR),
-                        vmread(vmcs::guest::DS_SELECTOR),
-                        vmread(vmcs::guest::ES_SELECTOR)
-                    );
-                    log::error!("CR0={:#x} CR3={:#x} CR4={:#x}", vmread(vmcs::guest::CR0), vmread(vmcs::guest::CR3), vmread(vmcs::guest::CR4));
-                    log::error!("GDTR base={:#x} limit={:#x}", vmread(vmcs::guest::GDTR_BASE), vmread(vmcs::guest::GDTR_LIMIT));
-                    log::error!("IDTR base={:#x} limit={:#x}", vmread(vmcs::guest::IDTR_BASE), vmread(vmcs::guest::IDTR_LIMIT));
-
-                    // Try to read the first few IDT entries to see if they're valid
-                    let idtr_base = vmread(vmcs::guest::IDTR_BASE) as *const u64;
-                    log::error!("First 4 IDT entries (raw 128-bit each):");
-                    for i in 0..4 {
-                        let low = unsafe { core::ptr::read_volatile(idtr_base.add(i * 2)) };
-                        let high = unsafe { core::ptr::read_volatile(idtr_base.add(i * 2 + 1)) };
-                        // Extract the handler address from 64-bit IDT entry
-                        let offset_low = (low & 0xFFFF) as u64;
-                        let offset_mid = ((low >> 48) & 0xFFFF) as u64;
-                        let offset_high = (high & 0xFFFFFFFF) as u64;
-                        let handler = offset_low | (offset_mid << 16) | (offset_high << 32);
-                        let selector = ((low >> 16) & 0xFFFF) as u16;
-                        let ist = ((low >> 32) & 0x7) as u8;
-                        let type_attr = ((low >> 40) & 0xFF) as u8;
-                        log::error!("  IDT[{}]: handler={:#x}, sel={:#x}, IST={}, type={:#x}", i, handler, selector, ist, type_attr);
-                    }
-
-                    // Check if RIP is on stack (indicates corrupted return address)
-                    let rip = vm.guest_registers.rip;
-                    let rsp = vm.guest_registers.rsp;
-                    if rip >= rsp && rip < rsp + 0x1000 {
-                        log::error!("!!! RIP ({:#x}) appears to be on the stack (RSP={:#x}) !!!", rip, rsp);
-                        log::error!("This suggests a corrupted return address was popped");
-                    }
-
-                    // Try to read bytes at RIP for #UD analysis
-                    log::error!("Attempting to read bytes at RIP...");
-                    let rip_ptr = rip as *const u8;
-                    if rip < 0x100000000 {
-                        let bytes: [u8; 8] = unsafe { core::ptr::read_volatile(rip_ptr as *const [u8; 8]) };
-                        log::error!(
-                            "Bytes at RIP: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                            bytes[0],
-                            bytes[1],
-                            bytes[2],
-                            bytes[3],
-                            bytes[4],
-                            bytes[5],
-                            bytes[6],
-                            bytes[7]
-                        );
-
-                        // Check for common VMX instructions that would cause #UD in guest
-                        // VMCALL = 0F 01 C1, VMLAUNCH = 0F 01 C2, VMRESUME = 0F 01 C3, VMXOFF = 0F 01 C4
-                        if bytes[0] == 0x0F && bytes[1] == 0x01 {
-                            match bytes[2] {
-                                0xC1 => log::error!("!!! Detected VMCALL instruction - guest trying to use VMX !!!"),
-                                0xC2 => log::error!("!!! Detected VMLAUNCH instruction - guest trying to use VMX !!!"),
-                                0xC3 => log::error!("!!! Detected VMRESUME instruction - guest trying to use VMX !!!"),
-                                0xC4 => log::error!("!!! Detected VMXOFF instruction - guest trying to use VMX !!!"),
-                                _ => {}
-                            }
-                        }
-                        // VMREAD = 0F 78, VMWRITE = 0F 79
-                        if bytes[0] == 0x0F && bytes[1] == 0x78 {
-                            log::error!("!!! Detected VMREAD instruction - guest trying to use VMX !!!");
-                        }
-                        if bytes[0] == 0x0F && bytes[1] == 0x79 {
-                            log::error!("!!! Detected VMWRITE instruction - guest trying to use VMX !!!");
-                        }
-                        // VMXON = F3 0F C7, VMCLEAR = 66 0F C7
-                        if (bytes[0] == 0xF3 || bytes[0] == 0x66) && bytes[1] == 0x0F && bytes[2] == 0xC7 {
-                            log::error!("!!! Detected VMX memory instruction (VMXON/VMCLEAR) !!!");
-                        }
-                        // VMPTRLD/VMPTRST = 0F C7
-                        if bytes[0] == 0x0F && bytes[1] == 0xC7 {
-                            log::error!("!!! Detected VMPTRLD/VMPTRST instruction !!!");
-                        }
-                    }
-
-                    // Dump some stack contents
-                    log::error!("Stack contents around RSP:");
-                    let stack_ptr = rsp as *const u64;
-                    for i in 0..16 {
-                        let val = unsafe { core::ptr::read_volatile(stack_ptr.add(i)) };
-                        log::error!("  [RSP+{:#x}] = {:#x}", i * 8, val);
-                    }
-
-                    // Also dump stack above RSP (previously pushed data)
-                    log::error!("Stack contents ABOVE RIP (0xffca8b0):");
-                    let rip_as_stack = (rip as *const u64).wrapping_sub(4); // Look before RIP
-                    for i in 0..8 {
-                        let addr = unsafe { rip_as_stack.add(i) };
-                        let val = unsafe { core::ptr::read_volatile(addr) };
-                        log::error!("  [{:#x}] = {:#x}", addr as u64, val);
-                    }
-
-                    panic!("#UD exception - halting for analysis");
+                    // Double faults use error code 0, inject as hardware exception
+                    EventInjection::inject_hw_exception(8, Some(0)); // Vector 8 = #DF
+                }
+                ExceptionInterrupt::StackSegmentFault => {
+                    log::error!("=== #SS (Stack Segment Fault) ===");
+                    log::error!("RIP={:#x} RSP={:#x} Error={:#x}", vm.guest_registers.rip, vm.guest_registers.rsp, interruption_error_code_value);
+                    EventInjection::inject_hw_exception(12, Some(interruption_error_code_value as u32)); // Vector 12 = #SS
+                }
+                ExceptionInterrupt::SegmentNotPresent => {
+                    log::error!("=== #NP (Segment Not Present) ===");
+                    log::error!("RIP={:#x} Error={:#x}", vm.guest_registers.rip, interruption_error_code_value);
+                    EventInjection::inject_hw_exception(11, Some(interruption_error_code_value as u32)); // Vector 11 = #NP
+                }
+                ExceptionInterrupt::InvalidTSS => {
+                    log::error!("=== #TS (Invalid TSS) ===");
+                    log::error!("RIP={:#x} Error={:#x}", vm.guest_registers.rip, interruption_error_code_value);
+                    EventInjection::inject_hw_exception(10, Some(interruption_error_code_value as u32)); // Vector 10 = #TS
+                }
+                ExceptionInterrupt::DivisionError => {
+                    log::debug!("#DE at RIP={:#x}", vm.guest_registers.rip);
+                    EventInjection::inject_hw_exception(0, None); // Vector 0 = #DE
+                }
+                ExceptionInterrupt::Debug => {
+                    log::debug!("#DB at RIP={:#x}", vm.guest_registers.rip);
+                    EventInjection::inject_hw_exception(1, None); // Vector 1 = #DB
+                }
+                ExceptionInterrupt::NonMaskableInterrupt => {
+                    log::debug!("NMI received at RIP={:#x}", vm.guest_registers.rip);
+                    EventInjection::inject_nmi(); // NMI uses different injection type
+                }
+                ExceptionInterrupt::Overflow => {
+                    log::debug!("#OF at RIP={:#x}", vm.guest_registers.rip);
+                    EventInjection::inject_hw_exception(4, None); // Vector 4 = #OF
+                }
+                ExceptionInterrupt::BoundRangeExceeded => {
+                    log::debug!("#BR at RIP={:#x}", vm.guest_registers.rip);
+                    EventInjection::inject_hw_exception(5, None); // Vector 5 = #BR
+                }
+                ExceptionInterrupt::DeviceNotAvailable => {
+                    log::debug!("#NM at RIP={:#x}", vm.guest_registers.rip);
+                    EventInjection::inject_hw_exception(7, None); // Vector 7 = #NM
+                }
+                ExceptionInterrupt::AlignmentCheck => {
+                    log::debug!("#AC at RIP={:#x} Error={:#x}", vm.guest_registers.rip, interruption_error_code_value);
+                    EventInjection::inject_hw_exception(17, Some(interruption_error_code_value as u32)); // Vector 17 = #AC
+                }
+                ExceptionInterrupt::MachineCheck => {
+                    log::error!("=== #MC (Machine Check) - THIS IS BAD ===");
+                    log::error!("RIP={:#x}", vm.guest_registers.rip);
+                    EventInjection::inject_hw_exception(18, None); // Vector 18 = #MC
+                }
+                ExceptionInterrupt::SimdFloatingPointException => {
+                    log::debug!("#XF at RIP={:#x}", vm.guest_registers.rip);
+                    EventInjection::inject_hw_exception(19, None); // Vector 19 = #XF
                 }
                 _ => {
-                    panic!("Unhandled exception: {:?}", exception_interrupt);
+                    log::warn!("Unhandled exception: {:?} at RIP={:#x}", exception_interrupt, vm.guest_registers.rip);
+                    // Try to re-inject as a generic hardware exception
+                    EventInjection::inject_hw_exception(interruption_info.vector as u32, None);
                 }
             }
         } else {
-            panic!("Invalid Exception Interrupt Vector: {}", interruption_info.vector);
+            log::error!("Invalid Exception Interrupt Vector: {}", interruption_info.vector);
+            // Don't panic - try to continue
         }
     } else {
-        panic!("Invalid VM Exit Interruption Information");
+        log::error!("Invalid VM Exit Interruption Information: {:#x}", interruption_info_value);
+        // Don't panic - try to continue
     }
 
     log::debug!("Exception Handled successfully!");
@@ -217,62 +162,79 @@ pub fn handle_exception(vm: &mut Vm) -> ExitType {
     ExitType::Continue
 }
 
-/*
-/// Handles breakpoint (`#BP`) exceptions specifically.
-///
-/// When a breakpoint exception occurs, this function checks for a registered hook
-/// at the current instruction pointer (RIP). If a hook is found, it transfers control
-/// to the hook's handler. Otherwise, it injects a breakpoint exception into the VM.
-///
-/// # Arguments
-///
-/// * `guest_registers` - A mutable reference to the guest's current register state.
-/// * `vmx` - A mutable reference to the Vmx structure.
-fn handle_breakpoint_exception(guest_registers: &mut GuestRegisters, vm: &mut Vm) {
-    log::debug!("Breakpoint Exception");
+/// Dumps detailed diagnostics for #UD exceptions
+fn dump_ud_diagnostics(vm: &Vm) {
+    let rip = vm.guest_registers.rip;
+    let rsp = vm.guest_registers.rsp;
 
-    let hook_manager = vm.hook_manager.as_mut();
+    // Check what caused the VM-exit
+    let exit_intr_info = vmread(vmcs::ro::VMEXIT_INTERRUPTION_INFO);
+    let exit_intr_err = vmread(vmcs::ro::VMEXIT_INTERRUPTION_ERR_CODE);
+    let exit_qual = vmread(vmcs::ro::EXIT_QUALIFICATION);
+    let instr_len = vmread(vmcs::ro::VMEXIT_INSTRUCTION_LEN);
+    log::error!("VM-exit interruption info: {:#x}", exit_intr_info);
+    log::error!("VM-exit interruption err:  {:#x}", exit_intr_err);
+    log::error!("Exit qualification:        {:#x}", exit_qual);
+    log::error!("Instruction length:        {:#x}", instr_len);
 
-    log::trace!("Finding hook for RIP: {:#x}", guest_registers.rip);
+    // Check IDT vectoring info
+    let idt_vec_info = vmread(vmcs::ro::IDT_VECTORING_INFO);
+    let idt_vec_err = vmread(vmcs::ro::IDT_VECTORING_ERR_CODE);
+    log::error!("IDT vectoring info:        {:#x}", idt_vec_info);
+    log::error!("IDT vectoring err code:    {:#x}", idt_vec_err);
 
-    // Find the handler address for the current instruction pointer (RIP) and
-    // transfer the execution to it. If we couldn't find a hook, we inject the
-    // #BP exception.
-    //
-    if let Some(Some(handler)) =
-        hook_manager
-            .find_hook_by_address(guest_registers.rip)
-            .map(|hook| {
-                log::trace!("Found hook for RIP: {:#x}", guest_registers.rip);
-                if let HookType::Function { inline_hook } = &hook.hook_type {
-                    log::trace!("Getting handler address");
-                    Some(inline_hook.handler_address())
-                } else {
-                    None
-                }
-            })
-    {
-        // Call our hook handle function (it will automatically call trampoline).
-        log::trace!("Transferring execution to handler: {:#x}", handler);
-        guest_registers.rip = handler;
-        vmwrite(vmcs::guest::RIP, guest_registers.rip);
+    log::error!("RIP: {:#x}, RSP: {:#x}", rip, rsp);
+    log::error!("RFLAGS: {:#x}", vm.guest_registers.rflags);
+    log::error!(
+        "RAX={:#x} RBX={:#x} RCX={:#x} RDX={:#x}",
+        vm.guest_registers.rax,
+        vm.guest_registers.rbx,
+        vm.guest_registers.rcx,
+        vm.guest_registers.rdx
+    );
+    log::error!("RSI={:#x} RDI={:#x} RBP={:#x}", vm.guest_registers.rsi, vm.guest_registers.rdi, vm.guest_registers.rbp);
+    log::error!(
+        "R8={:#x} R9={:#x} R10={:#x} R11={:#x}",
+        vm.guest_registers.r8,
+        vm.guest_registers.r9,
+        vm.guest_registers.r10,
+        vm.guest_registers.r11
+    );
+    log::error!(
+        "R12={:#x} R13={:#x} R14={:#x} R15={:#x}",
+        vm.guest_registers.r12,
+        vm.guest_registers.r13,
+        vm.guest_registers.r14,
+        vm.guest_registers.r15
+    );
+    log::error!(
+        "CS={:#x} SS={:#x} DS={:#x} ES={:#x}",
+        vmread(vmcs::guest::CS_SELECTOR),
+        vmread(vmcs::guest::SS_SELECTOR),
+        vmread(vmcs::guest::DS_SELECTOR),
+        vmread(vmcs::guest::ES_SELECTOR)
+    );
+    log::error!("CR0={:#x} CR3={:#x} CR4={:#x}", vmread(vmcs::guest::CR0), vmread(vmcs::guest::CR3), vmread(vmcs::guest::CR4));
+    log::error!("GDTR base={:#x} limit={:#x}", vmread(vmcs::guest::GDTR_BASE), vmread(vmcs::guest::GDTR_LIMIT));
+    log::error!("IDTR base={:#x} limit={:#x}", vmread(vmcs::guest::IDTR_BASE), vmread(vmcs::guest::IDTR_LIMIT));
 
-        log::debug!("Breakpoint (int3) hook handled successfully!");
+    // NOTE: We cannot safely read bytes at RIP here!
+    // The RIP is a GUEST virtual address, but we're in the hypervisor.
+    // To read guest memory, we'd need to:
+    // 1. Walk the guest page tables (CR3) to translate RIP to physical
+    // 2. Then access that physical address
+    // For now, just log that we can't read it
+    if rip >= 0xFFFF800000000000 {
+        log::error!("RIP is in kernel space - would need EPT walk to read");
+    } else if rip > 0x1000 {
+        log::error!("RIP is in user space ({:#x}) - cannot read from hypervisor", rip);
+        log::error!("This #UD is from user-mode code, not kernel");
     } else {
-        EventInjection::vmentry_inject_bp();
-        log::debug!("Breakpoint exception handled successfully!");
-    };
+        log::error!("RIP is in low memory ({:#x}) - likely invalid", rip);
+    }
 }
-*/
 
 /// Handles undefined opcode (`#UD`) exceptions.
-///
-/// This function is invoked when the VM attempts to execute an invalid or undefined
-/// opcode. It injects an undefined opcode exception into the VM.
-///
-/// # Returns
-///
-/// * `ExitType::Continue` - Indicating that VM execution should continue.
 pub fn handle_undefined_opcode_exception() -> ExitType {
     log::debug!("Undefined Opcode Exception");
 

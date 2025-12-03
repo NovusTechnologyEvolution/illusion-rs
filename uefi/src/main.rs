@@ -8,11 +8,15 @@ extern crate alloc;
 use {
     crate::{processor::start_hypervisor_on_all_processors, setup::setup, stack::init},
     hypervisor::{
-        allocator::heap_init,
+        allocator::{heap_init, init_allocator_with_memory, is_using_protected_memory},
+        global_const::TOTAL_HEAP_SIZE,
         logger::{self, SerialPort},
     },
     log::*,
-    uefi::prelude::*,
+    uefi::{
+        boot::{self, AllocateType, MemoryType},
+        prelude::*,
+    },
 };
 
 pub mod hide;
@@ -29,14 +33,44 @@ fn main() -> Status {
         return e.status();
     }
 
-    // both of these are safe now
+    // Initialize stack management
     init();
-    heap_init();
+
+    // CRITICAL: Allocate heap memory as RUNTIME_SERVICES_DATA
+    // This memory type survives ExitBootServices() and won't be reclaimed by Windows!
+    let heap_size = TOTAL_HEAP_SIZE;
+    let page_count = (heap_size + 0xFFF) / 0x1000;
+
+    match boot::allocate_pages(
+        AllocateType::AnyPages,
+        MemoryType::RUNTIME_SERVICES_DATA, // CRITICAL: Survives Windows boot!
+        page_count,
+    ) {
+        Ok(addr) => {
+            let heap_ptr = addr.as_ptr() as *mut u8;
+
+            // Initialize the hypervisor's allocator with our protected memory
+            unsafe {
+                init_allocator_with_memory(heap_ptr, heap_size);
+            }
+        }
+        Err(_e) => {
+            // Fallback to static heap if UEFI allocation fails
+            heap_init();
+        }
+    }
 
     // initialize serial logger from hypervisor crate
     logger::init(SerialPort::COM1, log::LevelFilter::Debug);
 
     info!("The Matrix is an illusion");
+
+    // Log whether we're using protected memory
+    if is_using_protected_memory() {
+        info!("Heap is using RUNTIME_SERVICES_DATA - protected from Windows reclamation");
+    } else {
+        warn!("Heap is using STATIC memory - MAY BE RECLAIMED BY WINDOWS!");
+    }
 
     #[cfg(feature = "hide_uefi_memory")]
     {

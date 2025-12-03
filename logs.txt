@@ -1,12 +1,14 @@
 vcpu-0 INFO: The Matrix is an illusion
 vcpu-0 DEBUG: Setting up the hypervisor
-vcpu-0 DEBUG: Loaded image base: 0x96f0000..0xd73b000
+vcpu-0 DEBUG: Loaded image base: 0x96e1000..0xd73b000 (NOT recorded for EPT hiding)
+vcpu-0 DEBUG: Only specific allocations (VM, stack, dummy page) will be hidden
+vcpu-0 DEBUG: Dummy page created at 0x9734000 (not recorded for hiding - it's the swap target)
 vcpu-0 DEBUG: Starting hypervisor on all processors
 vcpu-0 INFO: start_hypervisor_on_all_processors: ENTRY
-vcpu-0 INFO: Total processors: 8, enabled: 8
+vcpu-0 INFO: Total processors: 1, enabled: 1
 vcpu-0 DEBUG: start_hypervisor_on_this_cpu: ENTRY
-vcpu-0 DEBUG: virtualizing CPU, RIP=0x96f2fe2, RSP=0xffca658->0xffca660
-vcpu-0 DEBUG: virtualize_system(): landing=0x96f1e60, host_stack_top=0xfbc4020
+vcpu-0 DEBUG: virtualizing CPU, RIP=0x96e4127, RSP=0xffca668->0xffca670
+vcpu-0 DEBUG: virtualize_system(): landing=0x96e2e20, host_stack_top=0xfbc4020
 vcpu-0 DEBUG: landing(): calling start_hypervisor
 vcpu-0 DEBUG: Starting hypervisor
 vcpu-0 INFO: CPU is Intel
@@ -15,7 +17,7 @@ vcpu-0 INFO: Memory Type Range Registers (MTRRs) are supported
 vcpu-0 INFO: Extended Page Tables (EPT) are supported
 vcpu-0 DEBUG: CPU is supported
 vcpu-0 DEBUG: Allocating VM structure on heap (size: ~4.2MB)
-vcpu-0 DEBUG: VM structure allocated successfully
+vcpu-0 DEBUG: VM structure allocated at 0x9734000 (4227072 bytes)
 vcpu-0 DEBUG: Building identity map for page tables
 vcpu-0 DEBUG: Building identity map for page tables
 vcpu-0 DEBUG: Identity map built successfully
@@ -64,14 +66,14 @@ vcpu-0 DEBUG: VMX CR0 fixed0: 0x0000000080000021, fixed1: 0x00000000ffffffff
 vcpu-0 DEBUG: Verifying guest_cr3 0xfc01000
 vcpu-0 DEBUG: PML4[0] at guest_cr3 = 0xfc02023
 vcpu-0 DEBUG: ✓ Guest CR3 points to valid page tables (PML4[0] = 0xfc02023)
-vcpu-0 DEBUG: Verifying Guest RIP: 0x96f2fe2
-vcpu-0 DEBUG: First 16 bytes at Guest RIP: [84, c0, 0f, 84, e6, 01, 00, 00, 48, 8b, 05, 27, 50, 04, 04, 48]
+vcpu-0 DEBUG: Verifying Guest RIP: 0x96e4127
+vcpu-0 DEBUG: First 16 bytes at Guest RIP: [84, c0, 0f, 84, dc, 01, 00, 00, 48, 8b, 05, e2, 3e, 05, 04, 48]
 vcpu-0 DEBUG: Guest will resume at original UEFI return address
 vcpu-0 DEBUG: VMX CR4 fixed0: 0x0000000000002000, fixed1: 0x0000000001f72fff
 vcpu-0 DEBUG: Guest CR4 (with VMXE per VMX requirements): 0x0000000000002668
 vcpu-0 DEBUG: Guest CR0 (64-bit mode): 0x0000000080010033, Guest CR3: 0x000000000fc01000, Guest CR4: 0x0000000000002668
-vcpu-0 DEBUG: Guest RSP: 0x000000000ffca660, Guest RIP: 0x00000000096f2fe2
-vcpu-0 DEBUG: Guest EFER (64-bit mode): 0x0000000000000500
+vcpu-0 DEBUG: Guest RSP: 0x000000000ffca670, Guest RIP: 0x00000000096e4127
+vcpu-0 DEBUG: Guest EFER (64-bit mode): 0x0000000000000d00 - written to both VMCS and actual MSR
 vcpu-0 DEBUG: === Setting up segment access rights for 64-bit mode ===
 vcpu-0 DEBUG: Using TR AR from access_rights_from_native: 0x008b
 vcpu-0 DEBUG: Guest TR selector set to: 0x0030 (written AFTER TR_ACCESS_RIGHTS)
@@ -85,7 +87,7 @@ vcpu-0 DEBUG: GS AR: 0xc093 (expected 0xc093)
 vcpu-0 DEBUG: LDTR AR: 0x10000 (expected 0x10000)
 vcpu-0 DEBUG: TR AR: 0x008b (expected 0x008b)
 vcpu-0 DEBUG: === GUEST GDTR AND TR CONFIGURATION ===
-vcpu-0 DEBUG: Guest GDTR base: 0x000000000972e8c8
+vcpu-0 DEBUG: Guest GDTR base: 0x00000000097338a8
 vcpu-0 DEBUG: Guest GDTR limit: 0x003f (64 bytes, 8 descriptors max)
 vcpu-0 DEBUG: Guest TR selector: 0x0030 (index 6)
 vcpu-0 DEBUG: Guest TR base: 0x000000000fbbe060
@@ -113,62 +115,330 @@ vcpu-0 DEBUG: Final Pending Debug: 0x0
 vcpu-0 DEBUG: Final Guest CR4: 0x2668 (VMXE should be set)
 vcpu-0 DEBUG: Guest Registers State setup successfully!
 vcpu-0 DEBUG: Setting up Host Registers State
-vcpu-0 DEBUG: Host CR3: using actual CR3 0xfc01000 instead of pml4_pa 0x972f000
+vcpu-0 DEBUG: Host CR3: using actual CR3 0xfc01000 instead of pml4_pa 0x9734000
 vcpu-0 DEBUG: ✓ Host CR3 verified: PML4[0] = 0xfc02023
 vcpu-0 DEBUG: Host Registers State setup successfully!
 vcpu-0 DEBUG: Setting up VMCS Control Fields
-vcpu-0 DEBUG: Requested ENTRY_CTL bits: 0x00020204
+vcpu-0 DEBUG: Requested ENTRY_CTL bits: 0x00028204
 vcpu-0 DEBUG:   LOAD_DEBUG_CONTROLS: 0x4
 vcpu-0 DEBUG:   IA32E_MODE_GUEST: 0x200
+vcpu-0 DEBUG:   LOAD_IA32_EFER: 0x8000
 vcpu-0 DEBUG:   CONCEAL_VMX_FROM_PT: 0x20000
-vcpu-0 DEBUG: Primary controls:  0x940061f2
+vcpu-0 DEBUG: Requested ENTRY_CTL: 0x28204, Adjusted: 0x93ff
+vcpu-0 DEBUG: Primary controls:  0x94006172
 vcpu-0 DEBUG: Secondary controls: 0x001010aa
-vcpu-0 DEBUG: VM-entry controls: 0x000013ff
+vcpu-0 DEBUG: VM-entry controls: 0x000093ff
 vcpu-0 DEBUG: Unrestricted Guest: true
 vcpu-0 DEBUG: IA32E_MODE_GUEST: true
 vcpu-0 DEBUG: CR4 read shadow (guest will see): 0x668
 vcpu-0 DEBUG: CR4 guest/host mask: 0xfffffffffe08f000
 vcpu-0 DEBUG: VMCS Control Fields setup successfully!
 vcpu-0 DEBUG: VMCS activated
+vcpu-0 DEBUG: === Hiding hypervisor memory via EPT ===
+vcpu-0 DEBUG: Dummy page PA: 0x9734000
+vcpu-0 DEBUG: VM structure: 0x9734000 - 0x9b3c000 (4227072 bytes, 1032 pages)
+vcpu-0 DEBUG: Spans 3 2MB regions (0x9600000 to 0x9a00000)
+vcpu-0 DEBUG: Pre-allocating 3 page tables...
+vcpu-0 DEBUG: Page tables pre-allocated successfully
+vcpu-0 WARN: EPT hiding is DISABLED: Cannot hide VM structure while it's in use by CPU
+vcpu-0 WARN: The VM contains the active EPT - hiding it causes triple fault
+vcpu-0 WARN: Alternative: Use separate memory for hookable structures
+vcpu-0 DEBUG: Hypervisor hidden from guest
 vcpu-0 INFO: Launching the VM until a vmexit occurs...
+vcpu-0 INFO: VM structure at 0xfbc3d78
+vcpu-0 INFO: Exit #1: Cpuid @ RIP=0x9717a38
+vcpu-0 INFO: VM-exit #1: reason=Cpuid, RIP=0x9717a38
+vcpu-0 INFO: CPUID leaf 1: native ECX=0x77fa3223, masked ECX=0x77fa3203 (cleared VMX bit 5 and HV bit 31)
+vcpu-0 INFO:   Returning: EAX=0xc0662, EBX=0x10800, ECX=0x77fa3203, EDX=0xf8bfbff
+vcpu-0 INFO: Exit #2: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: VM-exit #2: reason=Cpuid, RIP=0xfabc13e
+vcpu-0 INFO: CPUID leaf 1: native ECX=0x77fa3223, masked ECX=0x77fa3203 (cleared VMX bit 5 and HV bit 31)
+vcpu-0 INFO:   Returning: EAX=0xc0662, EBX=0x10800, ECX=0x77fa3203, EDX=0xf8bfbff
+vcpu-0 INFO: Exit #3: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: VM-exit #3: reason=Cpuid, RIP=0xfabc13e
+vcpu-0 INFO: CPUID leaf 1: native ECX=0x77fa3223, masked ECX=0x77fa3203 (cleared VMX bit 5 and HV bit 31)
+vcpu-0 INFO:   Returning: EAX=0xc0662, EBX=0x10800, ECX=0x77fa3203, EDX=0xf8bfbff
 vcpu-0 INFO: Hypervisor installed on BSP (AP support pending per-CPU structures)
+vcpu-0 INFO: Exit #4: Cpuid @ RIP=0xfadc768
+vcpu-0 INFO: VM-exit #4: reason=Cpuid, RIP=0xfadc768
+vcpu-0 INFO: CPUID leaf 1: native ECX=0x77fa3223, masked ECX=0x77fa3203 (cleared VMX bit 5 and HV bit 31)
+vcpu-0 INFO:   Returning: EAX=0xc0662, EBX=0x10800, ECX=0x77fa3203, EDX=0xf8bfbff
+vcpu-0 INFO: Exit #5: Cpuid @ RIP=0xfadc768
+vcpu-0 INFO: VM-exit #5: reason=Cpuid, RIP=0xfadc768
+vcpu-0 INFO: CPUID leaf 1: native ECX=0x77fa3223, masked ECX=0x77fa3203 (cleared VMX bit 5 and HV bit 31)
+vcpu-0 INFO:   Returning: EAX=0xc0662, EBX=0x10800, ECX=0x77fa3203, EDX=0xf8bfbff
+vcpu-0 INFO: Exit #6: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #7: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #8: Cpuid @ RIP=0xfadc768
+vcpu-0 INFO: Exit #9: Cpuid @ RIP=0xfadc768
+vcpu-0 INFO: Exit #10: Cpuid @ RIP=0xfadc768
 vcpu-0 INFO: VM-exit milestone: 10 exits
+vcpu-0 INFO: Exit #11: Cpuid @ RIP=0xfadc768
+vcpu-0 INFO: Exit #12: Cpuid @ RIP=0xfadc768
+vcpu-0 INFO: Exit #13: Cpuid @ RIP=0xfadc768
+vcpu-0 INFO: Exit #14: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #15: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #16: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #17: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #18: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #19: Cpuid @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #20: Cpuid @ RIP=0xfabc13e
 vcpu-0 INFO: VM-exit milestone: 100 exits
+vcpu-0 INFO: VM-exit milestone: 500 exits
+vcpu-0 DEBUG: Handling XSETBV VM VM exit...
+vcpu-0 DEBUG: XSETBV VM exit handled successfully!
 vcpu-0 INFO: VM-exit milestone: 1,000 exits
-vcpu-0 INFO: VM-exit milestone: 10,000 exits
-vcpu-0 INFO: VM-exit milestone: 100000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 200000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 300000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 400000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 500000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 600000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 700000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 800000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 900000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 1000000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 1100000 exits (last: Hlt @ 0xfadc254)
-vcpu-0 INFO: VM-exit milestone: 1200000 exits (last: Hlt @ 0xfadc254)
+vcpu-0 INFO: Exit #1425: TSC=0xb934ac2e8, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1450: TSC=0xbab194dd7, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1475: TSC=0xbc11404d1, RIP=0xfabc13e
+vcpu-0 INFO: VM-exit milestone: 1,500 exits
+vcpu-0 INFO: Exit #1500: Cpuid milestone @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #1500: TSC=0xbd94543ac, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1525: TSC=0xbeee14246, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1550: TSC=0xc06ae7c7b, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1575: TSC=0xc1ca99a85, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1600: TSC=0xc3478fb0d, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1625: TSC=0xc4a740d5a, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1650: TSC=0xc62433af0, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1675: TSC=0xc783e218e, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1700: TSC=0xc900d9432, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1725: TSC=0xca608add8, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1750: TSC=0xcbdd8079c, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1775: TSC=0xcd3d2ebef, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1800: TSC=0xceba26323, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1801: Cpuid(leaf=0x1, subleaf=0x1) @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #1825: TSC=0xd019d27f1, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1850: TSC=0xd196d198e, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1850: Cpuid(leaf=0x1, subleaf=0x1) @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #1875: TSC=0xd2f678b3a, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1900: TSC=0xd4736fca5, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1900: Cpuid(leaf=0x1, subleaf=0x1) @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #1925: TSC=0xd5d31d589, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1950: TSC=0xd75012ec3, RIP=0xfabc13e
+vcpu-0 INFO: Exit #1950: Cpuid(leaf=0x1, subleaf=0x1) @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #1975: TSC=0xd8afc2b80, RIP=0xfabc13e
+vcpu-0 INFO: VM-exit milestone: 2,000 exits - approaching crash zone
+vcpu-0 INFO: Exit #2000: Cpuid milestone @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #2000: TSC=0xda3382cb0, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2000: Cpuid(leaf=0x1, subleaf=0x1) @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #2025: TSC=0xdb8c6781d, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2050: TSC=0xdd09613ca, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2050: Cpuid(leaf=0x1, subleaf=0x1) @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #2075: TSC=0xde690d9c8, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2100: TSC=0xdfe6038f8, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2100: Cpuid(leaf=0x1, subleaf=0x1) @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #2125: TSC=0xe145af956, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2150: TSC=0xe2c2a4ddc, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2150: Cpuid(leaf=0x1, subleaf=0x1) @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #2175: TSC=0xe422537b6, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2200: TSC=0xe59f47cda, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2225: TSC=0xe6fefa7ce, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2250: TSC=0xe87be979a, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2275: TSC=0xe9db96172, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2300: TSC=0xeb588bb86, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2325: TSC=0xecb839ba8, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2350: TSC=0xee35325e8, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2375: TSC=0xef94eb2f8, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2400: TSC=0xf111fae62, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2425: TSC=0xf271830da, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2450: TSC=0xf3ee77fe0, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2475: TSC=0xf54e25e06, RIP=0xfabc13e
+vcpu-0 INFO: VM-exit milestone: 2,500 exits
+vcpu-0 INFO: Exit #2500: Cpuid milestone @ RIP=0xfabc13e
+vcpu-0 INFO: Exit #2500: TSC=0xf6d11a456, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2525: TSC=0xf82acb73c, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2550: TSC=0xf9a7cab04, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2575: TSC=0xfb0778b5f, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2600: TSC=0xfc846bf59, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2619: Xsetbv @ RIP=0x1024a71d
 vcpu-0 DEBUG: Handling XSETBV VM VM exit...
 vcpu-0 DEBUG: XSETBV VM exit handled successfully!
+vcpu-0 WARN: Guest IDT is empty at base 0x1ac080 - bootloader transition in progress
+vcpu-0 WARN: Exit #2622, RIP=0xd25619, reason=Cpuid
+vcpu-0 INFO: Exit #2625: TSC=0xfd97da5e5, RIP=0xd25619
+vcpu-0 INFO: Exit #2628: Xsetbv @ RIP=0xacb519
 vcpu-0 DEBUG: Handling XSETBV VM VM exit...
 vcpu-0 DEBUG: XSETBV VM exit handled successfully!
+vcpu-0 INFO: Exit #2650: TSC=0xfda5badb3, RIP=0xc8a90b
+vcpu-0 INFO: Exit #2675: TSC=0xfe8147e9f, RIP=0xd25619
+vcpu-0 INFO: Exit #2700: TSC=0xfefd07798, RIP=0xcfda0b
+vcpu-0 INFO: Exit #2725: TSC=0xff010bf4c, RIP=0xcfda0b
+vcpu-0 INFO: Exit #2750: TSC=0xff05014a0, RIP=0xcfda0b
+vcpu-0 INFO: Exit #2775: TSC=0xff08f6816, RIP=0xcfda0b
+vcpu-0 INFO: Exit #2800: TSC=0xff0ceff8c, RIP=0xcfda0b
+vcpu-0 INFO: Exit #2825: TSC=0xff10ffaf2, RIP=0xaf3f35
+vcpu-0 INFO: Exit #2850: TSC=0x10063d934a, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2875: TSC=0x102b3c5595, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2900: TSC=0x10432a6763, RIP=0xfabc13e
+vcpu-0 INFO: Exit #2925: TSC=0x104e227892, RIP=0xc8a90b
+vcpu-0 INFO: Exit #2929: Rdmsr @ RIP=0xab7e1e
+vcpu-0 INFO: Exit #2950: TSC=0x104eee3244, RIP=0xfadc768
+vcpu-0 INFO: Exit #2975: TSC=0x104f734690, RIP=0xfadc768
+vcpu-0 INFO: VM-exit milestone: 3,000 exits
+vcpu-0 INFO: Exit #3000: Cpuid milestone @ RIP=0xfadc768
+vcpu-0 INFO: Exit #3000: TSC=0x1050363b26, RIP=0xfadc768
+vcpu-0 INFO: Exit #3025: TSC=0x105341008c, RIP=0xfadc768
+vcpu-0 INFO: Exit #3050: TSC=0x105563f3fe, RIP=0xfb4c3f0
+vcpu-0 INFO: Exit #3054: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3055: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3062: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3063: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3070: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3071: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3075: TSC=0x105b81df1e, RIP=0xfb4c3f0
+vcpu-0 INFO: Exit #3078: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3079: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3086: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3087: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3094: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3095: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3100: TSC=0x10619910e8, RIP=0xfb4c3f0
+vcpu-0 INFO: Exit #3102: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3103: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3110: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3111: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3118: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3119: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3125: TSC=0x1067e5a4be, RIP=0xfb4c3f0
+vcpu-0 INFO: Exit #3126: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80000033, curr_actual=0x80010033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: Exit #3127: ControlRegisterAccesses @ RIP=0xfb4c3c7
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfb4c3c7
+vcpu-0 INFO:   MOV to CR0: new=0x80010033, curr_actual=0x80000033, curr_shadow=0x80000033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: Exit #3128: Xsetbv @ RIP=0xacb561
 vcpu-0 DEBUG: Handling XSETBV VM VM exit...
 vcpu-0 DEBUG: XSETBV VM exit handled successfully!
-vcpu-0 ERROR: === TRIPLE FAULT ===
-vcpu-0 ERROR: Exit count: 1220130
-vcpu-0 ERROR: Guest RIP: 0xc53894
-vcpu-0 ERROR: Guest RSP: 0x1a7da0
-vcpu-0 ERROR: Guest CR0: 0x80010033
-vcpu-0 ERROR: Guest CR3: 0x1ae000
-vcpu-0 ERROR: Guest CR4: 0x42668
-vcpu-0 ERROR: Guest RFLAGS: 0x10046
-vcpu-0 ERROR: Guest CS: 0x10
-vcpu-0 ERROR: Guest SS: 0x0
-vcpu-0 ERROR: Guest TR: 0x30
-vcpu-0 ERROR: Guest TR base: 0xfbbe060
-vcpu-0 ERROR: Guest GDTR base: 0x1ac000
-vcpu-0 ERROR: Guest GDTR limit: 0x7f
-vcpu-0 ERROR: Guest IDTR base: 0x1ac080
-vcpu-0 ERROR: Guest IDTR limit: 0xfff
-vcpu-0 ERROR: Interruptibility: 0x0
-vcpu-0 ERROR: Activity state: 0x0
+vcpu-0 INFO: Exit #3150: TSC=0x1074d648b7, RIP=0xfffff807a5d5ecf3
+vcpu-0 INFO: Exit #3175: TSC=0x10751fbf15, RIP=0xfffff807a5d54891
+vcpu-0 INFO: Exit #3194: Wrmsr @ RIP=0xfffff807a5d495a8
+vcpu-0 INFO: Exit #3194: WRMSR 0xc0000082 = 0xfffff807a58b1d40 @ RIP=0xfffff807a5d495a8
+vcpu-0 INFO: Exit #3194: Writing IA32_LSTAR = 0xfffff807a58b1d40
+vcpu-0 INFO: Shadowed original LSTAR value: 0xfffff807a58b1d40
+vcpu-0 INFO: Exit #3194: IA32_LSTAR written successfully
+vcpu-0 INFO: Exit #3200: TSC=0x107a526575, RIP=0xfffff80736b210fa
+vcpu-0 INFO: Exit #3225: TSC=0x1278591219, RIP=0xfffff807a569d963
+vcpu-0 INFO: Exit #3242: Xsetbv @ RIP=0xfffff807a5d3c057
+vcpu-0 DEBUG: Handling XSETBV VM VM exit...
+vcpu-0 DEBUG: XSETBV VM exit handled successfully!
+vcpu-0 INFO: Exit #3250: TSC=0x1279d94a5b, RIP=0xfffff807a5d41cc9
+vcpu-0 INFO: Exit #3275: TSC=0x12e4ddbbe4, RIP=0xfffff80736bf18a6
+vcpu-0 INFO: Exit #3294: ControlRegisterAccesses @ RIP=0xfffff807a5d59c43
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfffff807a5d59c43
+vcpu-0 INFO:   MOV to CR0: new=0xc0050033, curr_actual=0x80050033, curr_shadow=0x80010033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: CR access #3294 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3295: ControlRegisterAccesses @ RIP=0xfffff807a5d59d0a
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=14, RIP=0xfffff807a5d59d0a
+vcpu-0 INFO:   MOV to CR0: new=0x80050033, curr_actual=0x80050033, curr_shadow=0xc0050033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: CR access #3295 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3300: TSC=0x130277d56b, RIP=0xfffff807a59c6643
+vcpu-0 INFO: Exit #3306: ControlRegisterAccesses @ RIP=0xfffff807a5dfafdf
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=0, RIP=0xfffff807a5dfafdf
+vcpu-0 INFO:   MOV to CR0: new=0x80040033, curr_actual=0x80050033, curr_shadow=0x80050033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: CR access #3306 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3307: ControlRegisterAccesses @ RIP=0xfffff807a5dfb00b
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfffff807a5dfb00b
+vcpu-0 INFO:   MOV to CR0: new=0x80050033, curr_actual=0x80050033, curr_shadow=0x80040033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: CR access #3307 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3312: ControlRegisterAccesses @ RIP=0xfffff807a5dfafdf
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=0, RIP=0xfffff807a5dfafdf
+vcpu-0 INFO:   MOV to CR0: new=0x80040033, curr_actual=0x80050033, curr_shadow=0x80050033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: CR access #3312 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3313: ControlRegisterAccesses @ RIP=0xfffff807a5dfb00b
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfffff807a5dfb00b
+vcpu-0 INFO:   MOV to CR0: new=0x80050033, curr_actual=0x80050033, curr_shadow=0x80040033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: CR access #3313 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3325: TSC=0x138ccc4247, RIP=0xfffff80736d25ee2
+vcpu-0 INFO: Exit #3329: ControlRegisterAccesses @ RIP=0xfffff807a5dfafdf
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=0, RIP=0xfffff807a5dfafdf
+vcpu-0 INFO:   MOV to CR0: new=0x80040033, curr_actual=0x80050033, curr_shadow=0x80050033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: CR access #3329 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3330: ControlRegisterAccesses @ RIP=0xfffff807a5dfb00b
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfffff807a5dfb00b
+vcpu-0 INFO:   MOV to CR0: new=0x80050033, curr_actual=0x80050033, curr_shadow=0x80040033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: CR access #3330 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3335: ControlRegisterAccesses @ RIP=0xfffff807a5dfafdf
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=0, RIP=0xfffff807a5dfafdf
+vcpu-0 INFO:   MOV to CR0: new=0x80040033, curr_actual=0x80050033, curr_shadow=0x80050033
+vcpu-0 INFO:   Bits: PE=1, WP=0, PG=1
+vcpu-0 INFO: CR access #3335 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3336: ControlRegisterAccesses @ RIP=0xfffff807a5dfb00b
+vcpu-0 INFO: CR access: MovToCr Cr0, GPR=1, RIP=0xfffff807a5dfb00b
+vcpu-0 INFO:   MOV to CR0: new=0x80050033, curr_actual=0x80050033, curr_shadow=0x80040033
+vcpu-0 INFO:   Bits: PE=1, WP=1, PG=1
+vcpu-0 INFO: CR access #3336 completed successfully, exit_type=IncrementRIP
+vcpu-0 INFO: Exit #3350: TSC=0x1413db227f, RIP=0xfffff80737a06807
+vcpu-0 INFO: Exit #3375: TSC=0x1a2977f269, RIP=0xfffff807376ead83
+vcpu-0 INFO: Exit #3400: TSC=0x1a4047c187, RIP=0xfffff8073de44657
+vcpu-0 INFO: Exit #3425: TSC=0x1a409671e1, RIP=0xfffff8073de44657
+vcpu-0 INFO: Exit #3450: TSC=0x1a53a07f90, RIP=0xfffff8073e2903cd
+vcpu-0 INFO: Exit #3550: TSC=0x1be6a61c29, RIP=0xfffff8073de44657
+vcpu-0 INFO: Exit #3575: TSC=0x1be6f3ca07, RIP=0xfffff8073de44657
+vcpu-0 INFO: Exit #3600: TSC=0x1d548ea060, RIP=0xfffff8073de44657
+vcpu-0 INFO: Exit #3625: TSC=0x1d54dcb2d4, RIP=0xfffff8073de44657
+vcpu-0 INFO: Exit #3650: TSC=0x1d5530a684, RIP=0xfffff8073de44657
+vcpu-0 INFO: Exit #3675: TSC=0x1d5ae9a6bc, RIP=0xfffff807a573d295

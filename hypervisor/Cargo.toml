@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["vmware", "hide_hv_with_ept"]  # Enable vmware and EPT hiding
 vmware = []
+hide_hv_with_ept = []  # Hide hypervisor memory via EPT with proper exclusions
+hide_uefi_memory = []  # For UEFI crate - records memory ranges
 
 [lib]
 name = "hypervisor"

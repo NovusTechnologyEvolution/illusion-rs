@@ -71,15 +71,14 @@ impl HookManager {
         let mut hook_manager = SHARED_HOOK_MANAGER.lock();
         hook_manager.dummy_page_pa = dummy_page_pa;
 
-        trace!("Modifying MSR interception for LSTAR MSR write access");
-        hook_manager
-            .msr_bitmap
-            .modify_msr_interception(msr::IA32_LSTAR, MsrAccessType::Write, MsrOperation::Hook);
+        // DIAGNOSTIC: Disable ALL MSR interception to test if it causes the crash
+        // If Windows boots successfully with this, then MSR handling is the issue
+        trace!("MSR interception DISABLED for diagnostic testing");
 
-        // often useful MSR to watch
-        hook_manager
-            .msr_bitmap
-            .modify_msr_interception(msr::IA32_FEATURE_CONTROL, MsrAccessType::Read, MsrOperation::Hook);
+        // Normally we would intercept LSTAR:
+        // hook_manager
+        //     .msr_bitmap
+        //     .modify_msr_interception(msr::IA32_LSTAR, MsrAccessType::Write, MsrOperation::Hook);
     }
 
     pub fn record_allocation(&mut self, start: usize, size: usize) {

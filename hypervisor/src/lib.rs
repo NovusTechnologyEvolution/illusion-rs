@@ -16,3 +16,6 @@ pub mod intel;
 pub mod logger;
 pub mod vmm;
 pub mod windows;
+
+// Re-export key allocator functions for easy access
+pub use allocator::{heap_init, init_allocator_with_memory, is_using_protected_memory};

@@ -376,11 +376,16 @@ impl core::fmt::Display for VmInstructionError {
 /// Intel® 64 and IA-32 Architectures Software Developer's Manual: Table 28-3. Exit Qualification for Control-Register Accesses
 #[derive(Debug, Clone, Copy)]
 pub struct ControlRegAccessExitQualification {
+    /// Bits 3:0 - Number of control register (0 for CR0, 3 for CR3, 4 for CR4, 8 for CR8)
     pub control_reg: CrAccessReg,
+    /// Bits 5:4 - Access type (0 = MOV to CR, 1 = MOV from CR, 2 = CLTS, 3 = LMSW)
     pub access_type: CrAccessType,
+    /// Bit 6 - LMSW operand type (0 = register, 1 = memory). For CLTS and MOV CR, cleared to 0.
     pub lmsw_op_type: LmswOperandType,
+    /// Bits 11:8 - For MOV CR, the general-purpose register
     pub gpr_mov_cr: u64,
-    // 31:16 not implemented for now
+    /// Bits 31:16 - For LMSW, the LMSW source data
+    pub lmsw_source_data: u64,
 }
 
 impl ControlRegAccessExitQualification {
@@ -391,6 +396,7 @@ impl ControlRegAccessExitQualification {
             access_type: CrAccessType::from_u64(value.get_bits(4..6)).unwrap(),
             lmsw_op_type: LmswOperandType::from_u64(value.get_bit(6) as u64).unwrap(),
             gpr_mov_cr: value.get_bits(8..12),
+            lmsw_source_data: value.get_bits(16..32),
         }
     }
 }
@@ -448,23 +454,23 @@ impl EptViolationExitQualification {
     /// Constructs an `EptViolationExitQualification` from the raw 64-bit exit qualification value.
     pub fn from_exit_qualification(value: u64) -> Self {
         EptViolationExitQualification {
-            data_read: value & (1 << 0) != 0,
-            data_write: value & (1 << 1) != 0,
-            instruction_fetch: value & (1 << 2) != 0,
-            readable: value & (1 << 3) != 0,
-            writable: value & (1 << 4) != 0,
-            executable: value & (1 << 5) != 0,
-            user_mode_executable: value & (1 << 6) != 0,
-            guest_linear_address_valid: value & (1 << 7) != 0,
-            guest_physical_access: value & (1 << 8) != 0,
-            supervisor_user_mode: value & (1 << 9) != 0,
-            linear_address_read_write: value & (1 << 10) != 0,
-            linear_address_executable: value & (1 << 11) != 0,
-            nmi_unblocking_due_to_iret: value & (1 << 12) != 0,
-            shadow_stack_access: value & (1 << 13) != 0,
-            supervisor_shadow_stack_control: value & (1 << 14) != 0,
-            caused_by_guest_paging_verification: value & (1 << 15) != 0,
-            asynchronous_access: value & (1 << 16) != 0,
+            data_read: value.get_bit(0),
+            data_write: value.get_bit(1),
+            instruction_fetch: value.get_bit(2),
+            readable: value.get_bit(3),
+            writable: value.get_bit(4),
+            executable: value.get_bit(5),
+            user_mode_executable: value.get_bit(6),
+            guest_linear_address_valid: value.get_bit(7),
+            guest_physical_access: value.get_bit(8),
+            supervisor_user_mode: value.get_bit(9),
+            linear_address_read_write: value.get_bit(10),
+            linear_address_executable: value.get_bit(11),
+            nmi_unblocking_due_to_iret: value.get_bit(12),
+            shadow_stack_access: value.get_bit(13),
+            supervisor_shadow_stack_control: value.get_bit(14),
+            caused_by_guest_paging_verification: value.get_bit(15),
+            asynchronous_access: value.get_bit(16),
         }
     }
 }
@@ -475,8 +481,10 @@ impl core::fmt::Debug for EptViolationExitQualification {
             .field("Data Read", &self.data_read)
             .field("Data Write", &self.data_write)
             .field("Instruction Fetch", &self.instruction_fetch)
-            .field("Page Permissions", &format_args!("R:{} W:{} X:{}", self.readable, self.writable, self.executable))
-            .field("User Mode Executable", &self.user_mode_executable)
+            .field("EPT Readable", &self.readable)
+            .field("EPT Writable", &self.writable)
+            .field("EPT Executable", &self.executable)
+            .field("EPT User-mode Executable", &self.user_mode_executable)
             .field("Guest Linear Address Valid", &self.guest_linear_address_valid)
             .field("Guest Physical Access", &self.guest_physical_access)
             .field("Supervisor/User Mode", &self.supervisor_user_mode)
