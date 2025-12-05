@@ -44,6 +44,21 @@ impl CpuidFeatureInfo {
 }
 
 /// Per-vCPU virtual machine state.
+///
+/// IMPORTANT MEMORY NOTE:
+/// ----------------------
+/// The physical pages backing this `Vm` instance include:
+///   - `vmxon_region`
+///   - `vmcs_region`
+///   - `primary_ept` tables
+///   - host paging structures
+///   - I/O bitmaps
+///
+/// These pages are **critical** for VMX root operation and must NEVER be
+/// subject to EPT hiding from the guest's point of view. EPT hiding logic
+/// (which redirects pages to a dummy page or toggles permissions) must treat
+/// these as *non-hideable* "hypervisor core" pages. Only auxiliary data (such
+/// as heap regions explicitly recorded for hiding) should be redirected.
 pub struct Vm {
     /// The VMXON (Virtual Machine Extensions On) region for the VM.
     pub vmxon_region: Vmxon,
@@ -81,7 +96,7 @@ pub struct Vm {
     /// I/O bitmap A (ports 0x0000-0x7FFF), 4KB aligned
     pub io_bitmap_a: Box<[u8; 4096]>,
 
-    /// I/O bitmap B (ports 0x8000-0xFFFF plus one extra byte), 4KB aligned  
+    /// I/O bitmap B (ports 0x8000-0xFFFF plus one extra byte), 4KB aligned
     pub io_bitmap_b: Box<[u8; 4096]>,
 }
 
@@ -148,9 +163,10 @@ impl Vm {
         self.mtf_counter = None;
 
         trace!("Getting and Setting CPUID Feature Information and XCR0 Unsupported Mask");
-        let cpuid_ext_state_info = cpuid!(0x0d, 0x00);
+        // Query CPUID.(EAX=0x0D, ECX=0) for XSAVE supported state components
+        let cpuid_ext_state_info = unsafe { cpuid!(0x0d, 0x00) };
         self.cpuid_feature_info = CpuidFeatureInfo::new();
-        self.xcr0_unsupported_mask = !((cpuid_ext_state_info.edx as u64) << 32 | cpuid_ext_state_info.eax as u64);
+        self.xcr0_unsupported_mask = !(((cpuid_ext_state_info.edx as u64) << 32) | cpuid_ext_state_info.eax as u64);
 
         trace!("VM created");
         debug!("VM initialized");
@@ -466,20 +482,11 @@ impl Vm {
         }
 
         // CRITICAL FIX: DO NOT clear VMENTRY_INTERRUPTION_INFO here!
-        // The old code was clearing event injection set up by exception handlers:
         //
-        //   let vm_entry_intr_info = vmread(0x4016);
-        //   if vm_entry_intr_info != 0 {
-        //       vmwrite(0x4016, 0u32);  // <-- THIS WAS BREAKING EXCEPTION INJECTION
-        //   }
-        //
-        // When handle_exception() sets up a #PF, #GP, or #UD to be re-injected
-        // to the guest, clearing this field prevents the exception from ever
-        // being delivered. The guest thinks it was handled but it wasn't,
-        // leading to state corruption and eventual triple fault.
-        //
-        // The hardware automatically clears this field after successful VM-entry,
-        // so there's no need for manual clearing.
+        // Hardware automatically clears it after a successful VM-entry.
+        // Clearing it manually would discard pending exception injection
+        // set up by handlers, leading to silent corruption and eventual
+        // guest instability.
 
         // Log if we're about to inject an event (for debugging)
         let pending_injection = vmread(0x4016); // VMENTRY_INTERRUPTION_INFO_FIELD

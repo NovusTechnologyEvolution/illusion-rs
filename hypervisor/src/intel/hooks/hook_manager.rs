@@ -39,6 +39,12 @@ pub enum EptHookType {
 }
 
 /// Central hook manager shared across the hypervisor.
+///
+/// NOTE ON ADDRESSES:
+/// - `allocated_memory_ranges` are interpreted as **host physical ranges**
+///   (or identity-mapped UEFI pointers from RUNTIME_SERVICES_* allocations).
+/// - The EPT code expects host-physical page frame numbers when it swaps pages
+///   to the dummy page.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct HookManager {
@@ -49,6 +55,13 @@ pub struct HookManager {
     pub ntoskrnl_base_pa: u64,
     pub ntoskrnl_size: u64,
     pub has_cpuid_cache_info_been_called: bool,
+
+    /// Catalog of hypervisor-owned physical ranges that *may* be candidates
+    /// for EPT hiding. Each entry is `(start_phys, size_bytes)`.
+    ///
+    /// In the current design, `hide_hv_with_ept` clears this vector and
+    /// records only the contiguous `Vm` structure range, then calls
+    /// `hide_hypervisor_memory_except` to selectively hide those pages.
     pub allocated_memory_ranges: Vec<(usize, usize)>,
 }
 
@@ -71,16 +84,20 @@ impl HookManager {
         let mut hook_manager = SHARED_HOOK_MANAGER.lock();
         hook_manager.dummy_page_pa = dummy_page_pa;
 
-        // DIAGNOSTIC: Disable ALL MSR interception to test if it causes the crash
-        // If Windows boots successfully with this, then MSR handling is the issue
-        trace!("MSR interception DISABLED for diagnostic testing");
+        // Restore the behavior from the article / original project:
+        // intercept IA32_LSTAR writes so we can hook the system call entry.
+        trace!("Initializing MSR bitmap: intercepting IA32_LSTAR writes for syscall hook");
 
-        // Normally we would intercept LSTAR:
-        // hook_manager
-        //     .msr_bitmap
-        //     .modify_msr_interception(msr::IA32_LSTAR, MsrAccessType::Write, MsrOperation::Hook);
+        hook_manager
+            .msr_bitmap
+            .modify_msr_interception(msr::IA32_LSTAR, MsrAccessType::Write, MsrOperation::Hook);
     }
 
+    /// Record a hypervisor-owned physical range.
+    ///
+    /// `start` is treated as a physical address (or identity-mapped pointer),
+    /// `size` is in bytes. Any unaligned start/size is handled when we walk
+    /// pages in `hide_hypervisor_memory_except`.
     pub fn record_allocation(&mut self, start: usize, size: usize) {
         self.allocated_memory_ranges.push((start, size));
     }
@@ -99,7 +116,7 @@ impl HookManager {
         Ok(())
     }
 
-    /// Entry point your VMExit code was calling: enable/disable an EPT hook on a kernel export/SSDT.
+    /// Entry point your VM-exit code calls: enable/disable an EPT hook on a kernel export/SSDT.
     pub fn manage_kernel_ept_hook(
         &mut self,
         vm: &mut Vm,
@@ -138,20 +155,26 @@ impl HookManager {
         Ok(())
     }
 
-    /// Hide hypervisor memory by swapping pages with a dummy page (2MB→4KB split first).
-    /// This version hides ALL hypervisor memory without exceptions.
+    /// Legacy helper: hide all recorded hypervisor ranges with no exclusions.
+    ///
+    /// In the current design, `hide_hv_with_ept` prefers
+    /// `hide_hypervisor_memory_except` and passes an explicit exclusion list,
+    /// but we keep this for completeness and tests.
     pub fn hide_hypervisor_memory(&mut self, vm: &mut Vm, page_permissions: AccessType) -> Result<(), HypervisorError> {
-        // we can't mutate self while iterating &self, so collect first
-        let pages: Vec<u64> = self.allocated_memory_ranges.iter().map(|(start, _)| *start as u64).collect();
-
-        for guest_page_pa in pages {
-            self.ept_hide_hypervisor_memory(vm, guest_page_pa, page_permissions)?;
-        }
-        Ok(())
+        self.hide_hypervisor_memory_except(vm, &[], page_permissions)
     }
 
     /// Hide hypervisor memory EXCEPT for specific page-aligned addresses.
-    /// This is critical to avoid hiding code that will execute during VM-exits (like vmexit_handler).
+    ///
+    /// This walks all `allocated_memory_ranges` and:
+    ///   - splits any 2MB pages into 4KB pages as needed
+    ///   - swaps each eligible 4KB page to the dummy page with the requested
+    ///     EPT permissions
+    ///   - *skips* any page that appears in `exclude_pages`
+    ///
+    /// The actual hardware invalidations (INVEPT/INVVPID) are issued once
+    /// at the end for the entire batch, to match the original project's
+    /// behavior and avoid performance issues.
     ///
     /// # Arguments
     /// * `vm` - The VM instance
@@ -160,17 +183,17 @@ impl HookManager {
     pub fn hide_hypervisor_memory_except(&mut self, vm: &mut Vm, exclude_pages: &[u64], page_permissions: AccessType) -> Result<(), HypervisorError> {
         debug!("Hiding hypervisor memory with {} excluded pages", exclude_pages.len());
 
-        // Collect all pages we want to process
-        let mut pages_to_hide = Vec::new();
+        // Collect all pages we want to process.
+        let mut pages_to_hide: Vec<u64> = Vec::new();
 
         for (start, size) in &self.allocated_memory_ranges {
             let start_addr = *start as u64;
             let end_addr = start_addr + *size as u64;
 
-            // Process each 4KB page in this range
-            let mut current_page = start_addr & !0xFFF; // Align to 4KB
+            // Process each 4KB page in this range.
+            let mut current_page = start_addr & !0xFFF; // Align to 4KB.
             while current_page < end_addr {
-                // Check if this page should be excluded
+                // Check if this page should be excluded.
                 let should_exclude = exclude_pages.iter().any(|&excluded| {
                     let excluded_aligned = excluded & !0xFFF;
                     current_page == excluded_aligned
@@ -182,46 +205,25 @@ impl HookManager {
                     pages_to_hide.push(current_page);
                 }
 
-                current_page += 0x1000; // Move to next 4KB page
+                current_page += 0x1000; // Move to next 4KB page.
             }
         }
+
+        // Avoid duplicate work if ranges overlap.
+        pages_to_hide.sort_unstable();
+        pages_to_hide.dedup();
 
         let num_pages = pages_to_hide.len();
         debug!("Hiding {} pages (excluded {} pages)", num_pages, exclude_pages.len());
 
-        // Now hide all non-excluded pages WITHOUT invalidating after each one
-        // We'll do a single invalidation at the end for performance
+        // Now hide all non-excluded pages WITHOUT invalidating after each one.
+        // We'll do a single invalidation at the end for performance.
         for guest_page_pa in pages_to_hide {
             self.ept_hide_hypervisor_memory_no_invalidate(vm, guest_page_pa, page_permissions)?;
         }
 
-        // Single invalidation at the end for all changes
+        // Single invalidation at the end for all changes.
         debug!("Invalidating EPT and VPID caches once for all {} pages", num_pages);
-        invept_all_contexts();
-        invvpid_all_contexts();
-
-        Ok(())
-    }
-
-    fn ept_hide_hypervisor_memory(&mut self, vm: &mut Vm, guest_page_pa: u64, page_permissions: AccessType) -> Result<(), HypervisorError> {
-        let guest_page_pa = PAddr::from(guest_page_pa).align_down_to_base_page();
-        let guest_large_page_pa = guest_page_pa.align_down_to_large_page();
-        let dummy_page_pa = self.dummy_page_pa;
-
-        self.memory_manager.map_large_page_to_pt(guest_large_page_pa.as_u64())?;
-
-        let pre_alloc_pt = self
-            .memory_manager
-            .get_page_table_as_mut(guest_large_page_pa.as_u64())
-            .ok_or(HypervisorError::PageTableNotFound)?;
-
-        if vm.primary_ept.is_large_page(guest_page_pa.as_u64()) {
-            vm.primary_ept.split_2mb_to_4kb(guest_large_page_pa.as_u64(), pre_alloc_pt)?;
-        }
-
-        vm.primary_ept
-            .swap_page(guest_page_pa.as_u64(), dummy_page_pa, page_permissions, pre_alloc_pt)?;
-
         invept_all_contexts();
         invvpid_all_contexts();
 
@@ -240,6 +242,7 @@ impl HookManager {
         let guest_large_page_pa = guest_page_pa.align_down_to_large_page();
         let dummy_page_pa = self.dummy_page_pa;
 
+        // Make sure we have a split page table for this 2MB region.
         self.memory_manager.map_large_page_to_pt(guest_large_page_pa.as_u64())?;
 
         let pre_alloc_pt = self
@@ -247,14 +250,16 @@ impl HookManager {
             .get_page_table_as_mut(guest_large_page_pa.as_u64())
             .ok_or(HypervisorError::PageTableNotFound)?;
 
+        // If it's still a 2MB large page in the EPT, split it into 4KB entries.
         if vm.primary_ept.is_large_page(guest_page_pa.as_u64()) {
             vm.primary_ept.split_2mb_to_4kb(guest_large_page_pa.as_u64(), pre_alloc_pt)?;
         }
 
+        // Finally, swap this 4KB page to the dummy page with the requested permissions.
         vm.primary_ept
             .swap_page(guest_page_pa.as_u64(), dummy_page_pa, page_permissions, pre_alloc_pt)?;
 
-        // NO invalidation here - caller will do it once for all pages
+        // NO invalidation here - caller will do it once for all pages.
 
         Ok(())
     }

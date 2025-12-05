@@ -1,10 +1,24 @@
 #![allow(static_mut_refs)]
 #![allow(unsafe_op_in_unsafe_fn)]
-//! This module provides a global allocator using a linked list heap allocation strategy.
+//! Global allocator using a linked-list heap allocation strategy.
 //!
-//! IMPORTANT: Call `init_allocator_with_memory()` with RUNTIME_SERVICES_DATA memory
-//! to ensure the heap survives Windows boot. Otherwise, use `heap_init()` for
-//! the fallback static heap (which may be reclaimed by Windows).
+//! MEMORY MODEL NOTES
+//! ------------------
+//! - When the UEFI image is built as an `efi_runtime_driver` (DXE_RUNTIME_DRIVER),
+//!   the `.data` / `.bss` segments (including this static heap) are typically
+//!   mapped as `RUNTIME_SERVICES_DATA`, which **survives ExitBootServices** and
+//!   **will not be reclaimed** by Windows.
+//!
+//! - For extra control (or if you want to exactly follow the Illusion-style
+//!   "reserve a big chunk and hide it" model), you can:
+//!       * Allocate a large block from UEFI as `RUNTIME_SERVICES_DATA`
+//!         or mark it as `EfiUnusableMemory` in the memory map, and
+//!       * Pass that block into `init_allocator_with_memory()`.
+//!
+//! - `heap_init()` remains as a convenience initializer that uses the static
+//!   heap baked into the image. In a proper runtime driver, this is already
+//!   safe with respect to Windows reclamation, but you may still prefer
+//!   `init_allocator_with_memory()` for finer-grained control.
 
 use {
     crate::global_const::TOTAL_HEAP_SIZE,
@@ -20,8 +34,12 @@ use {
 /// The global heap size used by the allocator.
 const HEAP_SIZE: usize = TOTAL_HEAP_SIZE;
 
-/// A statically allocated heap for the entire system (FALLBACK ONLY).
-/// WARNING: This may be in LOADER_DATA memory which Windows reclaims!
+/// A statically allocated heap for the entire system.
+///
+/// In an EFI RUNTIME driver build, this `.bss` region is typically
+/// `RUNTIME_SERVICES_DATA`, which survives ExitBootServices. We still
+/// treat it as a "fallback" to encourage explicit external-heap use
+/// when you want Illusion-style reserved memory.
 static mut HEAP: [u8; HEAP_SIZE] = [0u8; HEAP_SIZE];
 
 /// A global mutex-protected allocator instance.
@@ -30,64 +48,70 @@ static ALLOCATOR_MUTEX: Mutex<()> = Mutex::new(());
 /// A global linked list heap allocator instance.
 static mut LIST_HEAP: Option<ListHeap<HEAP_SIZE>> = None;
 
-/// Tracks whether we're using protected memory
+/// Tracks whether we're using protected / external memory.
 static mut USING_PROTECTED_MEMORY: bool = false;
 
 /// A global allocator that uses the custom linked list heap.
 pub struct GlobalAllocator;
 
-/// Old name used by the UEFI crate - uses static heap (may be reclaimed!)
+/// Old name used by the UEFI crate - uses the static heap.
 pub fn heap_init() {
     init_allocator();
 }
 
 /// Initialize with the static heap.
-/// WARNING: This memory may be reclaimed by Windows after ExitBootServices!
+///
+/// In an EFI runtime driver, this memory is typically `RUNTIME_SERVICES_DATA`
+/// and safe from Windows reclamation. We still log it as "static" to
+/// differentiate from externally-provided, explicitly-reserved heaps.
 pub fn init_allocator() {
     unsafe {
         USING_PROTECTED_MEMORY = false;
         LIST_HEAP = Some(ListHeap::new(&mut HEAP));
-        debug!("Heap initialized with STATIC memory at {:#x} (WARNING: may be reclaimed by Windows!)", HEAP.as_ptr() as u64);
+        debug!("Heap initialized with STATIC image memory at {:#x} ({} bytes)", HEAP.as_ptr() as u64, HEAP_SIZE);
     }
 }
 
 /// Initialize with externally-provided memory.
-/// Call this with RUNTIME_SERVICES_DATA memory to survive Windows boot!
+///
+/// Call this with memory that you've allocated as:
+///   - `RUNTIME_SERVICES_DATA`, OR
+///   - a region you've marked as `EfiUnusableMemory` / reserved in the UEFI
+///     memory map (Illusion-style hidden memory).
 ///
 /// # Safety
-/// - `heap_ptr` must point to valid memory of at least `size` bytes
-/// - The memory must remain valid for the lifetime of the hypervisor
-/// - The memory should be allocated as RUNTIME_SERVICES_DATA
+/// - `heap_ptr` must point to valid memory of at least `size` bytes.
+/// - The memory must remain valid for the lifetime of the hypervisor.
+/// - The memory should not be used by anything else (OS or firmware).
 pub unsafe fn init_allocator_with_memory(heap_ptr: *mut u8, size: usize) {
     if heap_ptr.is_null() || size < 0x10000 {
-        debug!("Invalid heap parameters, falling back to static heap");
+        debug!("init_allocator_with_memory: invalid heap parameters (ptr={:?}, size=0x{:X}), falling back to static heap", heap_ptr, size);
         init_allocator();
         return;
     }
 
     USING_PROTECTED_MEMORY = true;
 
-    // Zero the memory first
+    // Zero the memory first.
     core::ptr::write_bytes(heap_ptr, 0, size);
 
-    // Initialize the free list head at the start of the memory
+    // Initialize the free list head at the start of the memory.
     let free_list_head = heap_ptr as *mut Link;
     (*free_list_head).next = ptr::null_mut();
     (*free_list_head).size = size as isize - Link::SIZE as isize;
 
-    // Create a temporary heap structure
-    // We need to store this in LIST_HEAP but it expects ListHeap<HEAP_SIZE>
-    // Since we're replacing the whole thing, we'll use a workaround
+    // Store this heap in LIST_HEAP. Note that ListHeap is parameterized
+    // by HEAP_SIZE, but internally it stores the actual `size` we pass here.
     LIST_HEAP = Some(ListHeap {
         memory: heap_ptr,
         size,
         free_list_head,
     });
 
-    debug!("Heap initialized with PROTECTED memory at {:#x} ({} bytes, {} pages)", heap_ptr as u64, size, (size + 0xFFF) / 0x1000);
+    debug!("Heap initialized with EXTERNAL protected memory at {:#x} ({} bytes, {} pages)", heap_ptr as u64, size, (size + 0xFFF) / 0x1000);
 }
 
-/// Check if we're using protected memory
+/// Check if we're using an externally-provided (protected) heap.
 pub fn is_using_protected_memory() -> bool {
     unsafe { USING_PROTECTED_MEMORY }
 }
@@ -151,7 +175,7 @@ impl<const SIZE: usize> ListHeap<SIZE> {
                 link = (*link).next;
             }
 
-            total_allocations -= 1;
+            total_allocations = total_allocations.saturating_sub(1);
 
             let wasted = (total_allocations + 2) * Link::SIZE;
             debug!("Total Heap Size:                     0x{:X}", self.size);
@@ -180,8 +204,8 @@ impl<const SIZE: usize> ListHeap<SIZE> {
         let _guard = ALLOCATOR_MUTEX.lock();
 
         let aligned_size = layout.size().max(core::mem::size_of::<usize>());
-        let required_size =
-            (aligned_size + (layout.align().max(core::mem::size_of::<usize>()) - 1)) & !(layout.align().max(core::mem::size_of::<usize>()) - 1);
+        let align = layout.align().max(core::mem::size_of::<usize>());
+        let required_size = (aligned_size + (align - 1)) & !(align - 1);
 
         let mut link = self.free_list_head;
 
@@ -295,6 +319,7 @@ unsafe impl GlobalAlloc for GlobalAllocator {
     }
 }
 
+/// Convenience helper for allocating a zeroed Box.
 pub unsafe fn box_zeroed<T>() -> Box<T> {
-    unsafe { Box::<T>::new_zeroed().assume_init() }
+    Box::<T>::new_zeroed().assume_init()
 }

@@ -1,202 +1,67 @@
-//! Handles CPU-related virtualization tasks, specifically intercepting and managing
-//! the `CPUID` instruction in a VM to control the exposure of CPU features to the guest.
+//! CPUID VM-exit handler.
+//!
+//! For now this implementation keeps things deliberately simple and conservative:
+//! we mostly *pass through* the host CPUID values back to the guest. This is
+//! the safest behaviour in a nested-virtualization environment (e.g. VMware)
+//! and matches what the guest OS already expects from bare metal / L0.
+//!
+//! If you want to re-introduce Illusion-style CPUID virtualisation (hiding
+//! the hypervisor, Hyper-V friendly leaves, etc.), this is the right file to
+//! extend, but the current implementation focuses on correctness and stability
+//! first.
 
 use {
     crate::{
         error::HypervisorError,
-        intel::{
-            vm::Vm,
-            vmexit::{ExitType, commands::handle_guest_commands},
-        },
+        intel::{capture::GuestRegisters, vm::Vm, vmexit::ExitType},
     },
-    bitfield::BitMut,
     log::*,
-    shared::CommandStatus,
-    x86::cpuid::cpuid,
+    // Import `cpuid` to bring the `cpuid!` macro into scope, and `CpuIdResult`
+    // for the returned registers.
+    x86::cpuid::{CpuIdResult, cpuid},
 };
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u32)]
-/// Enum representing the various CPUID leaves for feature and interface discovery.
-/// Reference: https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/feature-discovery
-pub enum CpuidLeaf {
-    /// CPUID function number to retrieve the processor's vendor identification string.
-    VendorInfo = 0x0,
-
-    /// CPUID function for feature information, including hypervisor presence.
-    FeatureInformation = 0x1,
-
-    /// CPUID function for cache information.
-    CacheInformation = 0x2,
-
-    /// CPUID function for extended feature information.
-    ExtendedFeatureInformation = 0x7,
-
-    /// Hypervisor vendor information leaf.
-    HypervisorVendor = 0x40000000,
-
-    /// Hypervisor interface identification leaf.
-    HypervisorInterface = 0x40000001,
-
-    /// Hypervisor system identity information leaf.
-    HypervisorSystemIdentity = 0x40000002,
-
-    /// Hypervisor feature identification leaf.
-    HypervisorFeatureIdentification = 0x40000003,
-
-    /// Hypervisor implementation recommendations leaf.
-    ImplementationRecommendations = 0x40000004,
-
-    /// Hypervisor implementation limits leaf.
-    HypervisorImplementationLimits = 0x40000005,
-
-    /// Hardware-specific features in use by the hypervisor leaf.
-    ImplementationHardwareFeatures = 0x40000006,
-
-    /// Nested hypervisor feature identification leaf.
-    NestedHypervisorFeatureIdentification = 0x40000009,
-
-    /// Nested virtualization features available leaf.
-    HypervisorNestedVirtualizationFeatures = 0x4000000A,
+/// Convenience helper: run the real CPUID instruction for the given leaf/sub-leaf.
+fn host_cpuid(eax: u32, ecx: u32) -> CpuIdResult {
+    // The x86 crate exposes a `cpuid!` macro which accepts (eax, ecx) and
+    // returns a `CpuIdResult { eax, ebx, ecx, edx }`.
+    //
+    // We call it here so all host-CPUID usage is centralized.
+    unsafe { cpuid!(eax, ecx) }
 }
 
-/// Enumerates specific feature bits in the ECX register for CPUID instruction results.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-enum FeatureBits {
-    /// Bit 5 of ECX for CPUID with EAX=1, indicating VMX support.
-    HypervisorVmxSupportBit = 5,
-    /// Bit 31 of ECX for CPUID with EAX=1, indicating hypervisor presence.
-    HypervisorPresentBit = 31,
-}
-
-/// The password used for authentication with the hypervisor.
-const PASSWORD: u64 = 0xDEADBEEF;
-
-/// Handles the `CPUID` VM-exit.
+/// Handle a CPUID VM-exit.
 ///
-/// This function is invoked when the guest executes the `CPUID` instruction.
-/// The handler retrieves the results of the `CPUID` instruction executed on
-/// the host and then modifies or masks certain bits, if necessary, before
-/// returning the results to the guest.
-///
-/// # Arguments
-///
-/// * `vm` - A mutable reference to the virtual machine (VM) instance.
-///
-/// # Returns
-///
-/// * `ExitType::IncrementRIP` - To move past the `CPUID` instruction in the VM.
-///
-/// Reference: Intel® 64 and IA-32 Architectures Software Developer's Manual, Table C-1. Basic Exit Reasons 10.
+/// This reads the guest's requested leaf/sub-leaf from RAX/RCX, executes CPUID
+/// on the host CPU, writes the results back into the guest register snapshot,
+/// and advances RIP.
 pub fn handle_cpuid(vm: &mut Vm) -> Result<ExitType, HypervisorError> {
-    trace!("Handling CPUID VM exit...");
+    let regs: &mut GuestRegisters = &mut vm.guest_registers;
 
-    // const HYPERV_CPUID_LEAF_RANGE: RangeInclusive<u32> = 0x40000000..=0x4FFFFFFF;
+    let eax_in = regs.rax as u32;
+    let ecx_in = regs.rcx as u32;
 
-    let leaf = vm.guest_registers.rax as u32;
-    let sub_leaf = vm.guest_registers.rcx as u32;
+    trace!("CPUID exit: leaf={:#x}, sub_leaf={:#x}, RIP={:#x}", eax_in, ecx_in, regs.rip);
 
-    if vm.guest_registers.rax == PASSWORD {
-        // Handle the guest command and update the CPUID result accordingly
-        vm.guest_registers.rax = match handle_guest_commands(vm) {
-            Some(_) => CommandStatus::Success.to_u64(), // Command handled successfully
-            None => CommandStatus::Failure.to_u64(),    // Command handling failed
-        };
+    // Execute CPUID on the real CPU.
+    let CpuIdResult { eax, ebx, ecx, edx } = host_cpuid(eax_in, ecx_in);
 
-        trace!("Command executed successfully with leaf {:#x}", leaf);
-    } else {
-        // Execute CPUID instruction on the host and retrieve the result
-        let mut cpuid_result = cpuid!(leaf, sub_leaf);
-        trace!("CpuidLeaf: {:#x}", leaf);
+    regs.rax = eax as u64;
+    regs.rbx = ebx as u64;
+    regs.rcx = ecx as u64;
+    regs.rdx = edx as u64;
 
-        match leaf {
-            leaf if leaf == CpuidLeaf::VendorInfo as u32 => {
-                trace!("CPUID leaf 0x0 detected (Vendor Identification).");
-            }
-            leaf if leaf == CpuidLeaf::FeatureInformation as u32 => {
-                trace!("CPUID leaf 1 detected (Standard Feature Information).");
-
-                // Hide hypervisor presence by setting the appropriate bit in ECX.
-                cpuid_result.ecx.set_bit(FeatureBits::HypervisorPresentBit as usize, false);
-
-                // Hide VMX support by setting the appropriate bit in ECX.
-                // cpuid_result.ecx.set_bit(FeatureBits::HypervisorVmxSupportBit as usize, false);
-            }
-            leaf if leaf == CpuidLeaf::CacheInformation as u32 => {
-                trace!("CPUID leaf 0x2 detected (Cache Information).");
-
-                /*
-                // Lock the shared hook manager
-                let mut hook_manager = crate::intel::hooks::hook_manager::SHARED_HOOK_MANAGER.lock();
-
-                if !hook_manager.has_cpuid_cache_info_been_called {
-                    // Test UEFI boot-time hooks
-                    hook_manager.manage_kernel_ept_hook(
-                        vm,
-                        crate::windows::nt::pe::djb2_hash("NtQuerySystemInformation".as_bytes()),
-                        0x0036,
-                        crate::intel::hooks::hook_manager::EptHookType::Function(crate::intel::hooks::inline::InlineHookType::Vmcall),
-                        true,
-                    )?;
-                    hook_manager.manage_kernel_ept_hook(
-                        vm,
-                        crate::windows::nt::pe::djb2_hash("NtCreateFile".as_bytes()),
-                        0x0055,
-                        crate::intel::hooks::hook_manager::EptHookType::Function(crate::intel::hooks::inline::InlineHookType::Vmcall),
-                        true,
-                    )?;
-                    hook_manager.manage_kernel_ept_hook(
-                        vm,
-                        crate::windows::nt::pe::djb2_hash("NtAllocateVirtualMemory".as_bytes()),
-                        0x18,
-                        crate::intel::hooks::hook_manager::EptHookType::Function(crate::intel::hooks::inline::InlineHookType::Vmcall),
-                        true,
-                    )?;
-                    hook_manager.manage_kernel_ept_hook(
-                        vm,
-                        crate::windows::nt::pe::djb2_hash("NtQueryInformationProcess".as_bytes()),
-                        0x19,
-                        crate::intel::hooks::hook_manager::EptHookType::Function(crate::intel::hooks::inline::InlineHookType::Vmcall),
-                        true,
-                    )?;
-                    // Set the flag
-                    hook_manager.has_cpuid_cache_info_been_called = true;
-                }
-                 */
-            }
-            leaf if leaf == CpuidLeaf::ExtendedFeatureInformation as u32 => {
-                trace!("CPUID leaf 0x7 detected (Extended Feature Information).");
-            }
-            leaf if leaf == CpuidLeaf::HypervisorVendor as u32 => {
-                trace!("CPUID leaf 0x40000000 detected (Hypervisor Vendor Information).");
-                // Set the CPUID response to provide the hypervisor's vendor ID signature.
-                // We use the signature "Illusion" encoded in a little-endian format.
-                // cpuid_result.eax = CpuidLeaf::HypervisorInterface as u32; // Maximum supported CPUID leaf range.
-                // cpuid_result.ebx = 0x756c6c49; // "ullI", part of "Illusion" (in reverse order due to little-endian storage).
-                // cpuid_result.ecx = 0x6e6f6973; // "nois", part of "Illusion" (in reverse order due to little-endian storage).
-                // cpuid_result.edx = 0x00000000; // Filled with null bytes as there are no more characters to encode.
-            }
-            leaf if leaf == CpuidLeaf::HypervisorInterface as u32 => {
-                trace!("CPUID leaf 0x40000001 detected (Hypervisor Interface Identification).");
-                // Return information indicating the hypervisor's interface.
-                // Here, we specify that our hypervisor does not conform to the Microsoft hypervisor interface ("Hv#1").
-                // cpuid_result.eax = 0x00000000; // Interface signature indicating non-conformance to Microsoft interface.
-                // cpuid_result.ebx = 0x00000000; // Reserved field set to zero.
-                // cpuid_result.ecx = 0x00000000; // Reserved field set to zero.
-                // cpuid_result.edx = 0x00000000; // Reserved field set to zero.
-            }
-            _ => trace!("CPUID leaf 0x{leaf:X}."),
-        }
-
-        // Update the guest registers with the results
-        vm.guest_registers.rax = cpuid_result.eax as u64;
-        vm.guest_registers.rbx = cpuid_result.ebx as u64;
-        vm.guest_registers.rcx = cpuid_result.ecx as u64;
-        vm.guest_registers.rdx = cpuid_result.edx as u64;
-    }
-
-    trace!("CPUID VMEXIT handled successfully!");
+    // If you want to add any Illusion-style behaviour (e.g. special leaves
+    // that talk to the hypervisor, or masking certain feature bits), this is
+    // the natural place to hook them in:
+    //
+    //   match eax_in {
+    //       0x4000_0000 => { /* hypervisor signature / interface */ }
+    //       0x4149_4c4c => { /* "AILL" backdoor leaf */ }
+    //       _ => { /* fall back to generic path above */ }
+    //   }
+    //
+    // For now we keep everything as a transparent pass-through.
 
     Ok(ExitType::IncrementRIP)
 }

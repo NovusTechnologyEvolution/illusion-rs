@@ -28,7 +28,7 @@ use {
 ///
 /// Credits to @vmctx
 pub fn handle_xsetbv(vm: &mut Vm) -> ExitType {
-    log::debug!("Handling XSETBV VM VM exit...");
+    log::debug!("Handling XSETBV VM exit...");
 
     // Extract the XCR (extended control register) number from the guest's RCX register.
     let xcr: u32 = vm.guest_registers.rcx as u32;
@@ -47,14 +47,14 @@ pub fn handle_xsetbv(vm: &mut Vm) -> ExitType {
 
     // Make sure the guest is not trying to set any unsupported bits via cpuid cache
     if value.bits() & vm.xcr0_unsupported_mask != 0 {
-        log::debug!("Trying to set unsupported XCR0 value for xsetbv: {:#x}", xcr);
+        log::debug!("Trying to set unsupported XCR0 value for xsetbv: {:#x}", value_raw);
         EventInjection::vmentry_inject_gp(0);
         return ExitType::Continue;
     }
 
     // Make sure bits being set are architecturally valid.
     if !is_valid_xcr0(value) {
-        log::debug!("Invalid XCR0 value for xsetbv: {:#x}", xcr);
+        log::debug!("Invalid XCR0 value for xsetbv: {:#x}", value_raw);
         EventInjection::vmentry_inject_gp(0);
         return ExitType::Continue;
     }
@@ -88,7 +88,7 @@ fn is_valid_xcr0(xcr0: XCr0Flags) -> bool {
         return false;
     }
 
-    // #GP(0) if XCR0.AVX is 1 while XCRO.SSE is cleared
+    // #GP(0) if XCR0.AVX is 1 while XCR0.SSE is cleared
     if xcr0.contains(XCr0Flags::AVX) && !xcr0.contains(XCr0Flags::SSE) {
         return false;
     }

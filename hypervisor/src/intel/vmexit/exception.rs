@@ -7,7 +7,7 @@ use {
         events::EventInjection,
         support::vmread,
         vm::Vm,
-        vmerror::{EptViolationExitQualification, ExceptionInterrupt, VmExitInterruptionInformation},
+        vmerror::{ExceptionInterrupt, VmExitInterruptionInformation},
         vmexit::ExitType,
     },
     x86::vmx::vmcs,
@@ -36,15 +36,14 @@ pub fn handle_exception(vm: &mut Vm) -> ExitType {
         if let Some(exception_interrupt) = ExceptionInterrupt::from_u32(interruption_info.vector.into()) {
             match exception_interrupt {
                 ExceptionInterrupt::PageFault => {
-                    let exit_qualification_value = vmread(vmcs::ro::EXIT_QUALIFICATION);
-                    let ept_violation_qualification = EptViolationExitQualification::from_exit_qualification(exit_qualification_value);
-                    log::trace!("Exit Qualification for EPT Violations: {:#?}", ept_violation_qualification);
+                    // For #PF VM-exits, EXIT_QUALIFICATION holds the faulting linear address.
+                    let fault_linear_addr = vmread(vmcs::ro::EXIT_QUALIFICATION);
 
                     // Log page fault details for debugging
                     log::debug!(
-                        "#PF at RIP={:#x}, CR2 (faulting addr)={:#x}, error_code={:#x}",
+                        "#PF at RIP={:#x}, fault_linear_addr={:#x}, error_code={:#x}",
                         vm.guest_registers.rip,
-                        exit_qualification_value,
+                        fault_linear_addr,
                         interruption_error_code_value
                     );
 
